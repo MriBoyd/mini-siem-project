@@ -53,11 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let (alert_tx, mut alert_rx) = mpsc::channel::<types::Alert>(1000);
     
     // Start detection engine
-    let detection_engine = detection::DetectionEngine::new(
-        alert_tx.clone(),
-        redis,
-        db.clone(),
-    ).await;
+    let detection_engine = detection::DetectionEngine::new(alert_tx.clone(), redis, db.clone()).await;
     
     let detection_handle = task::spawn(async move {
         while let Some(log) = log_rx.recv().await {
