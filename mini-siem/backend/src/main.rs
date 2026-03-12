@@ -29,12 +29,9 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     
     // Get configuration from environment
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
-    let redis_url = std::env::var("REDIS_URL")
-        .expect("REDIS_URL must be set");
-    let kafka_brokers = std::env::var("KAFKA_BROKERS")
-        .unwrap_or_else(|_| "localhost:9092".to_string());
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
+    let kafka_brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
     let slack_webhook = std::env::var("SLACK_WEBHOOK").ok();
     
     // Initialize database
