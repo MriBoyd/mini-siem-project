@@ -1,0 +1,67 @@
+[package]
+name = "mini-siem"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web framework
+actix-web = "4.5"
+actix-rt = "2.9"
+actix-cors = "0.6"
+
+# async trait support
+async-trait = "0.1"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json", "migrate"] }
+redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Configuration
+config = "0.13"
+dotenvy = "0.15"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# UUID
+uuid = { version = "1.5", features = ["v4", "serde"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Environment
+lazy_static = "1.4"
+
+# metrics and monitoring
+prometheus = { version = "0.13", features = ["process"] }
+metrics = "0.21"
+metrics-exporter-prometheus = "0.12"
+
+# OpenAPI generation
+utoipa = "4.0"
+utoipa-swagger-ui = "4.0"
+regex = "1.10"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+

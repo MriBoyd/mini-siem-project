@@ -1,0 +1,60 @@
+# Root gitignore for the mini-siem project
+
+# macOS
+.DS_Store
+
+# Node.js / frontend
+frontend/node_modules/
+frontend/build/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Rust / backend
+/backend/target/
+/backend/**/*.rs.bk
+**/*.rs.bk
+/backend/Cargo.lock
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python (if any scripts used)
+__pycache__/
+*.py[cod]
+
+# Docker
+docker-compose.override.yml
+**/docker-compose.override.yml
+*.log
+
+# Environment files
+*.env
+
+# OS generated
+Thumbs.db
+
+# Go agent (if present)
+agent/bin/
+agent/vendor/
+
+# Terraform / infrastructure
+infrastructure/terraform/.terraform/
+
+# Kubernetes manifests generated outputs
+infrastructure/kubernetes/*.local
+
+# Build artifact leftovers
+**/dist/
+**/build/
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.tmp

@@ -1,0 +1,46 @@
+# docker-compose.yml for the agent
+version: '3.8'
+
+services:
+  agent:
+    build:
+      context: ./agent-go
+      dockerfile: Dockerfile
+      target: builder  # For development, remove for production
+    container_name: siem-agent
+    restart: unless-stopped
+    networks:
+      - siem-network
+    ports:
+      - "514:514/udp"  # Syslog
+    volumes:
+      # Mount host logs (read-only)
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # Mount config
+      - ./agent-go/config.json:/app/config.json:ro
+      # For development only - mount source
+      - ./agent-go:/app
+    environment:
+      - TZ=UTC
+      - LOG_LEVEL=debug
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "pgrep", "agent"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  siem-network:
+    external: true

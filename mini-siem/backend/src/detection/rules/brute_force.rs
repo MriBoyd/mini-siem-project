@@ -1,0 +1,74 @@
+use async_trait::async_trait;
+use std::collections::HashMap;
+use tokio::sync::Mutex;
+use std::sync::Arc;
+
+use crate::types::{Log, Alert, AlertSeverity};
+use crate::RedisCache;
+use super::Rule;
+
+pub struct BruteForceRule {
+    name: String,
+    id: String,
+    threshold: u32,
+    window_seconds: i64,
+    redis: Arc<Mutex<RedisCache>>,
+}
+
+impl BruteForceRule {
+    pub fn new(
+        id: String,
+        name: String,
+        threshold: u32,
+        window_seconds: i64,
+        redis: Arc<Mutex<RedisCache>>,
+    ) -> Self {
+        Self {
+            name,
+            id,
+            threshold,
+            window_seconds,
+            redis,
+        }
+    }
+}
+
+#[async_trait]
+impl Rule for BruteForceRule {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    
+    fn id(&self) -> &str {
+        &self.id
+    }
+    
+    async fn evaluate(&self, log: &Log) -> anyhow::Result<Option<Alert>> {
+        // Only check failed logins
+        if !log.is_failed_login() {
+            return Ok(None);
+        }
+        
+        let now = log.timestamp.timestamp();
+        let key = log.source_ip.clone();
+        
+        let mut cache = self.redis.lock().await;
+        // increment counter in redis with expiry equal to window
+        let count = cache.increment_counter(&key, self.window_seconds as u64).await?;
+        if count >= self.threshold {
+            Ok(Some(Alert::new(
+                self.id.clone(),
+                self.name.clone(),
+                AlertSeverity::High,
+                format!(
+                    "Possible brute force attack from {}: {} failed attempts",
+                    log.source_ip, count
+                ),
+                log.source_ip.clone(),
+                vec![log.clone()],
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+}

@@ -1,0 +1,21 @@
+# agent-go/.dockerignore
+.git
+.github
+.gitignore
+README.md
+.vscode
+.idea
+*.log
+*.md
+Dockerfile*
+.dockerignore
+coverage.out
+tmp/
+agent
+agent.exe
+test/
+tests/
+examples/
+docs/
+*.test
+*.prof

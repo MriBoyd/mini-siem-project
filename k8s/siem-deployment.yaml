@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: siem-engine
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: siem-engine
+  template:
+    metadata:
+      labels:
+        app: siem-engine
+    spec:
+      containers:
+      - name: engine
+        image: your-registry/siem-rust:latest
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: siem-secrets
+              key: database-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: siem-secrets
+              key: redis-url
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: siem-api
+spec:
+  selector:
+    app: siem-engine
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: LoadBalancer

@@ -1,0 +1,230 @@
+# .pre-commit-config.yaml
+# Install with: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # General file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        description: Trims trailing whitespace
+        exclude: ^.*\.(md|txt)$
+      
+      - id: end-of-file-fixer
+        description: Ensures files end with newline
+        exclude: ^.*\.(json|lock)$
+      
+      - id: check-yaml
+        description: Validates YAML syntax
+        args: [--allow-multiple-documents]
+      
+      - id: check-json
+        description: Validates JSON syntax
+      
+      - id: check-toml
+        description: Validates TOML syntax
+      
+      - id: check-added-large-files
+        description: Prevents committing large files
+        args: ['--maxkb=1024']
+      
+      - id: check-merge-conflict
+        description: Checks for merge conflict markers
+      
+      - id: detect-private-key
+        description: Detects private keys in code
+      
+      - id: check-case-conflict
+        description: Checks for case sensitivity issues
+      
+      - id: check-executables-have-shebangs
+        description: Ensures executable files have shebangs
+
+  # Python formatting (Black)
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        name: black (Python formatter)
+        language_version: python3.11
+        args: [--line-length=100, --target-version=py311]
+        files: ^backend/.*\.py$
+
+  # Python import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        name: isort (import sorter)
+        args: [--profile=black, --line-length=100]
+        files: ^backend/.*\.py$
+
+  # Python linting
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.0.0
+    hooks:
+      - id: flake8
+        name: flake8 (Python linter)
+        args: [
+          --max-line-length=100,
+          --extend-ignore=E203,W503,
+          --exclude=__init__.py,.git,__pycache__,
+          --per-file-ignores=__init__.py:F401
+        ]
+        files: ^backend/.*\.py$
+        additional_dependencies: [
+          flake8-docstrings==1.7.0,
+          flake8-bugbear==23.12.2,
+          flake8-comprehensions==3.14.0
+        ]
+
+  # Type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        name: mypy (static type checker)
+        args: [
+          --ignore-missing-imports,
+          --follow-imports=silent,
+          --show-column-numbers,
+          --no-strict-optional
+        ]
+        files: ^backend/.*\.py$
+        additional_dependencies: [
+          types-all,
+          pydantic,
+          sqlalchemy-stubs
+        ]
+
+  # Security scanning
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.6
+    hooks:
+      - id: bandit
+        name: bandit (security linter)
+        args: [
+          -r,
+          -ll,
+          -s B101,  # Skip assert warnings for tests
+          -f, txt
+        ]
+        files: ^backend/.*\.py$
+        exclude: ^backend/tests/
+
+  # Python security
+  - repo: https://github.com/PyCQA/autoflake
+    rev: v2.2.1
+    hooks:
+      - id: autoflake
+        name: autoflake (remove unused imports)
+        args: [
+          --in-place,
+          --remove-all-unused-imports,
+          --remove-unused-variables,
+          --ignore-init-module-imports
+        ]
+        files: ^backend/.*\.py$
+
+  # Detect secrets
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        name: detect-secrets (prevent secrets)
+        args: ['--baseline', '.secrets.baseline']
+        exclude: ^(.*\.lock|\.env\.example|tests/.*)$
+
+  # Markdown linting
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.38.0
+    hooks:
+      - id: markdownlint
+        name: markdownlint (MD formatting)
+        args: [--fix]
+        files: ^.*\.md$
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck
+        name: shellcheck (shell script linter)
+        files: ^.*\.sh$
+
+  # Dockerfile linting
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint
+        name: hadolint (Dockerfile linter)
+        files: ^.*/Dockerfile$
+
+  # GitHub Actions linting
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.6.26
+    hooks:
+      - id: actionlint
+        name: actionlint (GitHub Actions linter)
+        files: ^\.github/workflows/.*\.yml$
+
+  # Prettier for frontend
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        name: prettier (JS/TS formatter)
+        args: [--prose-wrap=always, --print-width=100]
+        files: ^frontend/.*\.(js|jsx|ts|tsx|css|scss|json)$
+        additional_dependencies:
+          - prettier@3.1.0
+          - '@prettier/plugin-xml@3.2.2'
+
+  # ESLint for frontend
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v8.56.0
+    hooks:
+      - id: eslint
+        name: eslint (JS linter)
+        files: ^frontend/.*\.(js|jsx|ts|tsx)$
+        args: [--fix]
+        additional_dependencies:
+          - eslint@8.56.0
+          - eslint-plugin-react@7.33.2
+          - '@typescript-eslint/eslint-plugin@6.18.0'
+
+  # Check for Python dependency vulnerabilities
+  - repo: https://github.com/Lucas-C/pre-commit-hooks-safety
+    rev: v1.3.2
+    hooks:
+      - id: python-safety
+        name: safety (dependency vulnerability check)
+        files: ^backend/requirements/.*\.txt$
+        args: [--ignore=, --db=https://pyup.io/api/v1/vulnerabilities/]
+
+  # Validate OpenAPI specs
+  - repo: https://github.com/python-openapi/openapi-spec-validator
+    rev: 0.7.1
+    hooks:
+      - id: openapi-spec-validator
+        name: OpenAPI validator
+        files: ^docs/api/.*\.(yaml|yml|json)$
+
+  # Check for TODO/FIXME comments (warn, don't block)
+  - repo: local
+    hooks:
+      - id: no-todo
+        name: Check for TODO comments
+        entry: bash -c '! grep -rn "TODO\|FIXME" --include="*.{py,js,jsx,ts,tsx}" .'
+        language: system
+        verbose: true
+        stages: [push]  # Only run on push, not commit
+
+# CI configuration
+ci:
+  autofix_prs: true
+  autofix_commit_msg: "style(pre-commit): auto fixes from pre-commit hooks"
+  autoupdate_commit_msg: "chore(pre-commit): update hook versions"
+  autoupdate_schedule: quarterly
+  submodules: false
