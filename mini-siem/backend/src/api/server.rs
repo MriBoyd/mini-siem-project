@@ -6,11 +6,14 @@ use std::sync::Arc;
 use crate::api::handlers::{logs, health, alerts, dashboard};
 use crate::db::PostgresDb;
 use crate::queue::kafka::KafkaQueue;
+use tokio::sync::mpsc;
+use crate::types::Log;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<PostgresDb>,
     pub kafka: Arc<KafkaQueue>,
+    pub log_tx: mpsc::Sender<Log>,
 }
 
 pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {

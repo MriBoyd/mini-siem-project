@@ -31,13 +31,13 @@ impl DbAlert {
             id: self.id,
             rule_id: self.rule_id,
             rule_name: self.rule_name,
-            severity: self.severity.parse().unwrap_or_else(|_| crate::types::AlertSeverity::Info),
+            severity: self.severity.parse().unwrap_or(crate::types::AlertSeverity::Info),
             description: self.description,
             source_ip: self.source_ip,
             events,
             first_seen: self.first_seen,
             last_seen: self.last_seen,
-            status: self.status.parse().unwrap_or_else(|_| crate::types::AlertStatus::New),
+            status: self.status.parse().unwrap_or(crate::types::AlertStatus::New),
             events_count: self.events_count as usize,
         })
     }
@@ -81,13 +81,13 @@ impl PostgresDb {
         .bind(alert.id)
         .bind(&alert.rule_id)
         .bind(&alert.rule_name)
-        .bind(&alert.severity.to_string())
+        .bind(alert.severity.to_string())
         .bind(&alert.description)
         .bind(&alert.source_ip)
         .bind(serde_json::to_value(&alert.events)?)
         .bind(alert.first_seen)
         .bind(alert.last_seen)
-        .bind(&alert.status.to_string())
+        .bind(alert.status.to_string())
         .bind(alert.events_count as i64)
         .bind(alert.first_seen) // using first_seen as created_at placeholder
         .bind(alert.last_seen)  // same for updated_at
@@ -114,7 +114,7 @@ impl PostgresDb {
         .bind(&log.target_user)
         .bind(&log.service)
         .bind(&log.message)
-        .bind(&log.severity.to_string())
+        .bind(log.severity.to_string())
         .bind(&log.metadata)
         .bind(log.received_at)
         .execute(&self.pool)
@@ -137,7 +137,7 @@ impl PostgresDb {
         )
         .bind(alert.id)
         .bind(alert.last_seen)
-        .bind(&alert.status.to_string())
+        .bind(alert.status.to_string())
         .bind(alert.events_count as i64)
         .bind(alert.last_seen)
         .execute(&self.pool)
@@ -157,7 +157,7 @@ impl PostgresDb {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| r.into_alert()).transpose()?)
+        row.map(|r| r.into_alert()).transpose()
     }
 
     pub async fn get_open_alerts_by_ip(&self, source_ip: &str) -> Result<Vec<Alert>> {

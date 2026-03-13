@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use crate::api::server::AppState;
 use crate::types::{Log, LogSeverity};
+use tokio::sync::mpsc::error::TrySendError;
 
 #[derive(Debug, Deserialize)]
 pub struct IngestLogRequest {
@@ -52,9 +53,27 @@ pub async fn ingest_log(
         warn!("Failed to persist log: {}", e);
     }
 
-    // Send into queue for downstream processing
-    if let Err(e) = state.kafka.send_log(&log).await {
-        warn!("Failed to enqueue log for processing: {}", e);
+    // Try to enqueue into in-memory queue for downstream processing. If the queue
+    // is full, return `429 Too Many Requests` to signal backpressure.
+    match state.log_tx.try_send(log.clone()) {
+        Ok(_) => {
+            // Also attempt to send to Kafka in background (best-effort)
+            let kafka = state.kafka.clone();
+            let l = log.clone();
+            actix_web::rt::spawn(async move {
+                if let Err(e) = kafka.send_log(&l).await {
+                    tracing::warn!("Failed to enqueue log to Kafka: {}", e);
+                }
+            });
+        }
+        Err(TrySendError::Full(_)) => {
+            warn!("Log channel full - rejecting request");
+            return HttpResponse::TooManyRequests().body("ingest queue full, try later");
+        }
+        Err(TrySendError::Closed(_)) => {
+            warn!("Log channel closed - rejecting request");
+            return HttpResponse::ServiceUnavailable().body("ingest service unavailable");
+        }
     }
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
@@ -98,8 +117,24 @@ pub async fn ingest_batch(
             warn!("Failed to persist log: {}", e);
         }
 
-        if let Err(e) = state.kafka.send_log(&log).await {
-            warn!("Failed to enqueue log for processing: {}", e);
+        match state.log_tx.try_send(log.clone()) {
+            Ok(_) => {
+                let kafka = state.kafka.clone();
+                let l = log.clone();
+                actix_web::rt::spawn(async move {
+                    if let Err(e) = kafka.send_log(&l).await {
+                        tracing::warn!("Failed to enqueue log to Kafka: {}", e);
+                    }
+                });
+            }
+            Err(TrySendError::Full(_)) => {
+                warn!("Log channel full - rejecting batch item");
+                return HttpResponse::TooManyRequests().body("ingest queue full, try later");
+            }
+            Err(TrySendError::Closed(_)) => {
+                warn!("Log channel closed - rejecting batch item");
+                return HttpResponse::ServiceUnavailable().body("ingest service unavailable");
+            }
         }
 
         responses.push(IngestLogResponse {

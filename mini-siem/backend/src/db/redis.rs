@@ -40,7 +40,7 @@ impl RedisCache {
     // Store alert suppression state
     pub async fn set_suppression(&mut self, rule_id: &str, ip: &str, ttl_seconds: u64) -> Result<()> {
         let key = format!("suppress:{}:{}", rule_id, ip);
-        let _: () = self.conn.set_ex(key, "1", ttl_seconds as u64).await?;
+        let _: () = self.conn.set_ex(key, "1", ttl_seconds).await?;
         Ok(())
     }
     
@@ -54,7 +54,7 @@ impl RedisCache {
     // Store IP reputation (from threat intel)
     pub async fn set_ip_reputation(&mut self, ip: &str, score: u8, ttl_seconds: u64) -> Result<()> {
         let key = format!("reputation:{}", ip);
-        let _: () = self.conn.set_ex(key, score, ttl_seconds as u64).await?;
+        let _: () = self.conn.set_ex(key, score, ttl_seconds).await?;
         Ok(())
     }
     

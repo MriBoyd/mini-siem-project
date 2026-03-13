@@ -1,9 +1,10 @@
 use actix_web::web;
-use anyhow::Context;
 use tokio::{signal, task, sync::{broadcast, mpsc}};
 use tracing::{info, error};
-use tracing_subscriber;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics::{gauge, register_gauge};
 
 mod api;
 mod types;
@@ -11,6 +12,7 @@ mod detection;
 mod db;
 mod alerting;
 mod queue;
+mod config;
 
 use db::{PostgresDb};
 use db::redis::RedisCache;
@@ -27,16 +29,12 @@ async fn main() -> anyhow::Result<()> {
     
     info!("🚀 Starting Mini SIEM (Rust Edition) v{}", env!("CARGO_PKG_VERSION"));
     
-    // Load environment
-    dotenvy::dotenv().ok();
-    
-    // Get configuration from environment
-    let database_url = std::env::var("DATABASE_URL")
-        .context("DATABASE_URL must be set")?;
-    let redis_url = std::env::var("REDIS_URL")
-        .context("REDIS_URL must be set")?;
-    let kafka_brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
-    let slack_webhook = std::env::var("SLACK_WEBHOOK").ok();
+    // Load configuration
+    let cfg = config::Config::from_env()?;
+    let database_url = cfg.database_url.clone();
+    let redis_url = cfg.redis_url.clone();
+    let kafka_brokers = cfg.kafka_brokers.clone();
+    let slack_webhook = cfg.slack_webhook.clone();
     
     // Initialize database
     let db = Arc::new(PostgresDb::new(&database_url).await?);
@@ -99,27 +97,57 @@ async fn main() -> anyhow::Result<()> {
     let kafka_consumer = kafka.clone();
     let log_tx_clone = log_tx.clone();
     let mut kafka_shutdown_rx = shutdown_tx.subscribe();
-    let kafka_handle = task::spawn(async move {
-        tokio::select! {
-            res = kafka_consumer.consume_logs(log_tx_clone) => {
-                if let Err(e) = res {
-                    error!("Kafka consumer error: {}", e);
-                }
-            }
-            _ = kafka_shutdown_rx.recv() => {
-                info!("🛑 Kafka consumer received shutdown");
+    let log_channel_full_counter = std::sync::Arc::new(AtomicUsize::new(0));
+    // Start Prometheus metrics exporter (optional)
+    match cfg.metrics_bind.parse::<std::net::SocketAddr>() {
+        Ok(addr) => {
+            if let Err(e) = PrometheusBuilder::new().with_http_listener(addr).install() {
+                error!("failed to install Prometheus recorder: {}", e);
             }
         }
+        Err(e) => {
+            error!("invalid METRICS_BIND address {}: {}", cfg.metrics_bind, e);
+        }
+    }
+
+    // Register a gauge metric for dropped logs
+    register_gauge!("siem_log_channel_drops");
+
+    // Spawn a task to periodically update the Prometheus gauge from the atomic counter
+    let metrics_counter = log_channel_full_counter.clone();
+    let _metrics_handle = task::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let val = metrics_counter.load(std::sync::atomic::Ordering::Relaxed) as f64;
+            gauge!("siem_log_channel_drops", val);
+        }
     });
+    let kafka_handle = {
+        let counter = log_channel_full_counter.clone();
+        task::spawn(async move {
+            tokio::select! {
+                res = kafka_consumer.consume_logs(log_tx_clone, Some(counter)) => {
+                    if let Err(e) = res {
+                        error!("Kafka consumer error: {}", e);
+                    }
+                }
+                _ = kafka_shutdown_rx.recv() => {
+                    info!("🛑 Kafka consumer received shutdown");
+                }
+            }
+        })
+    };
     
     // Create shared application state for the API handlers.
     let app_state = web::Data::new(api::server::AppState {
         db: db.clone(),
         kafka: kafka.clone(),
+        log_tx: log_tx.clone(),
     });
 
     info!("✅ Mini SIEM fully initialized");
-    info!("📡 API: http://localhost:8080");
+    info!("📡 API: http://{}", cfg.api_bind);
     info!("📊 Kafka: {}", kafka_brokers);
     info!("💾 PostgreSQL: connected");
     info!("🗄️  Redis: connected");
@@ -157,25 +185,39 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn shutdown_signal() {
-    let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+    let ctrl_c_fut = async {
+        if let Err(e) = signal::ctrl_c().await {
+            error!("failed to install Ctrl+C handler: {}", e);
+        }
     };
 
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
+    let mut sigterm: Option<tokio::signal::unix::Signal> = {
+        #[cfg(unix)]
+        {
+            match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    error!("failed to install unix signal handler: {}", e);
+                    None
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     };
 
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    let sigterm_fut = async {
+        if let Some(s) = sigterm.as_mut() {
+            s.recv().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        _ = ctrl_c_fut => {},
+        _ = sigterm_fut => {},
     }
 }
