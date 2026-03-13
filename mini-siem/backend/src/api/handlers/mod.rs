@@ -1,2 +1,4 @@
 pub mod logs;
 pub mod health;
+pub mod alerts;
+pub mod dashboard;

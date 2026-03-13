@@ -2,7 +2,7 @@ use actix_web::{web, App, HttpServer, middleware::Logger};
 use actix_cors::Cors;
 use tracing::info;
 
-use crate::api::handlers::{logs, health};
+use crate::api::handlers::{logs, health, alerts, dashboard};
 
 pub async fn run_server() -> std::io::Result<()> {
     // allow binding address to be configured via env var
@@ -24,6 +24,8 @@ pub async fn run_server() -> std::io::Result<()> {
             .service(health::health_check)
             .service(logs::ingest_log)
             .service(logs::ingest_batch)
+            .service(alerts::list_alerts)
+            .service(dashboard::get_stats)
     })
     .bind(bind_address)?
     .run()
