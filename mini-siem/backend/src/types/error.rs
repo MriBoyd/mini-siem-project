@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+#[allow(dead_code)]
 #[derive(Error, Debug)]
 pub enum SiemError {
     #[error("Database error: {0}")]
@@ -27,4 +28,5 @@ pub enum SiemError {
     InvalidInput(String),
 }
 
+#[allow(dead_code)]
 pub type Result<T> = std::result::Result<T, SiemError>;

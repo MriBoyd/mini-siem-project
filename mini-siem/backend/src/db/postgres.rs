@@ -1,5 +1,5 @@
-use sqlx::{postgres::PgPoolOptions, PgPool, query, query_as, query_scalar};
-use tracing::{info, error};
+use sqlx::{postgres::PgPoolOptions, PgPool, query_as, query_scalar};
+use tracing::info;
 use anyhow::Result;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
@@ -146,6 +146,7 @@ impl PostgresDb {
         Ok(())
     }
     
+    #[allow(dead_code)]
     pub async fn get_alert(&self, id: Uuid) -> Result<Option<Alert>> {
         let row: Option<DbAlert> = query_as(
             r#"SELECT id, rule_id, rule_name, severity, description, source_ip, events, first_seen, last_seen, status, events_count

@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 
@@ -49,7 +48,6 @@ impl Rule for BruteForceRule {
             return Ok(None);
         }
         
-        let now = log.timestamp.timestamp();
         let key = log.source_ip.clone();
         
         let mut cache = self.redis.lock().await;

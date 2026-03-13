@@ -41,6 +41,7 @@ impl fmt::Display for LogSeverity {
     }
 }
 
+#[allow(dead_code)]
 impl Log {
     pub fn new(
         event_type: String,

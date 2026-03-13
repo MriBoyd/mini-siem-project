@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use crate::types::{Log, Alert};
 
 #[async_trait]
+#[allow(dead_code)]
 pub trait Rule: Send + Sync {
     fn name(&self) -> &str;
     fn id(&self) -> &str;

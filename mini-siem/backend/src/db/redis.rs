@@ -1,12 +1,12 @@
 use redis::{aio::ConnectionManager, AsyncCommands, Client};
-use tracing::{info, error};
+use tracing::info;
 use anyhow::Result;
-use std::time::Duration;
 
 pub struct RedisCache {
     conn: ConnectionManager,
 }
 
+#[allow(dead_code)]
 impl RedisCache {
     pub async fn new(redis_url: &str) -> Result<Self> {
         info!("🗄️  Connecting to Redis...");
@@ -25,7 +25,7 @@ impl RedisCache {
         
         // Set expiry on first increment
         if count == 1 {
-            let _: () = self.conn.expire(key, expiry_seconds as usize).await?;
+            let _: () = self.conn.expire(key, expiry_seconds as i64).await?;
         }
         
         Ok(count)
@@ -40,7 +40,7 @@ impl RedisCache {
     // Store alert suppression state
     pub async fn set_suppression(&mut self, rule_id: &str, ip: &str, ttl_seconds: u64) -> Result<()> {
         let key = format!("suppress:{}:{}", rule_id, ip);
-        let _: () = self.conn.set_ex(key, "1", ttl_seconds as usize).await?;
+        let _: () = self.conn.set_ex(key, "1", ttl_seconds as u64).await?;
         Ok(())
     }
     
@@ -54,7 +54,7 @@ impl RedisCache {
     // Store IP reputation (from threat intel)
     pub async fn set_ip_reputation(&mut self, ip: &str, score: u8, ttl_seconds: u64) -> Result<()> {
         let key = format!("reputation:{}", ip);
-        let _: () = self.conn.set_ex(key, score, ttl_seconds as usize).await?;
+        let _: () = self.conn.set_ex(key, score, ttl_seconds as u64).await?;
         Ok(())
     }
     

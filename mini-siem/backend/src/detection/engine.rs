@@ -12,6 +12,7 @@ use super::rules::{
     malware::MalwareDetectionRule,
 };
 
+#[allow(dead_code)]
 pub struct DetectionEngine {
     rules: Vec<Box<dyn Rule + Send + Sync>>,
     alert_tx: mpsc::Sender<Alert>,
@@ -115,8 +116,9 @@ impl DetectionEngine {
         }
     }
     
+    #[allow(dead_code)]
     pub async fn get_stats(&self) -> serde_json::Value {
-        let mut redis = self.redis.lock().await;
+        let _redis = self.redis.lock().await;
         
         // Get some Redis stats
         let mut stats = serde_json::Map::new();

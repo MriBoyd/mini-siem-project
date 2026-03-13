@@ -4,4 +4,3 @@ pub mod error;
 
 pub use log::*;
 pub use alert::*;
-pub use error::*;

@@ -1,5 +1,6 @@
 use actix_web::web;
-use tokio::{signal, task, sync::mpsc};
+use anyhow::Context;
+use tokio::{signal, task, sync::{broadcast, mpsc}};
 use tracing::{info, error};
 use tracing_subscriber;
 use std::sync::Arc;
@@ -30,8 +31,10 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     
     // Get configuration from environment
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
+    let database_url = std::env::var("DATABASE_URL")
+        .context("DATABASE_URL must be set")?;
+    let redis_url = std::env::var("REDIS_URL")
+        .context("REDIS_URL must be set")?;
     let kafka_brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
     let slack_webhook = std::env::var("SLACK_WEBHOOK").ok();
     
@@ -52,24 +55,42 @@ async fn main() -> anyhow::Result<()> {
     // Create channels
     let (log_tx, mut log_rx) = mpsc::channel::<types::Log>(10000);
     let (alert_tx, mut alert_rx) = mpsc::channel::<types::Alert>(1000);
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
     
     // Start detection engine
     let detection_engine = detection::DetectionEngine::new(alert_tx.clone(), redis, db.clone()).await;
-    
+    let mut detect_shutdown_rx = shutdown_tx.subscribe();
     let detection_handle = task::spawn(async move {
-        while let Some(log) = log_rx.recv().await {
-            detection_engine.process_log(log).await;
+        loop {
+            tokio::select! {
+                Some(log) = log_rx.recv() => {
+                    detection_engine.process_log(log).await;
+                }
+                _ = detect_shutdown_rx.recv() => {
+                    info!("🛑 Detection engine received shutdown");
+                    break;
+                }
+            }
         }
     });
     
     // Start alert handler with Slack
+    let mut alert_shutdown_rx = shutdown_tx.subscribe();
     let alert_handle = task::spawn(async move {
-        while let Some(alert) = alert_rx.recv().await {
-            info!("📢 Alert: {} - {}", alert.severity, alert.description);
-            
-            // Send to Slack
-            if let Err(e) = slack.send_alert(&alert).await {
-                error!("Failed to send Slack notification: {}", e);
+        loop {
+            tokio::select! {
+                Some(alert) = alert_rx.recv() => {
+                    info!("📢 Alert: {} - {}", alert.severity, alert.description);
+                    
+                    // Send to Slack
+                    if let Err(e) = slack.send_alert(&alert).await {
+                        error!("Failed to send Slack notification: {}", e);
+                    }
+                }
+                _ = alert_shutdown_rx.recv() => {
+                    info!("🛑 Alert handler received shutdown");
+                    break;
+                }
             }
         }
     });
@@ -77,9 +98,17 @@ async fn main() -> anyhow::Result<()> {
     // Start Kafka consumer (receives logs from Go agent)
     let kafka_consumer = kafka.clone();
     let log_tx_clone = log_tx.clone();
+    let mut kafka_shutdown_rx = shutdown_tx.subscribe();
     let kafka_handle = task::spawn(async move {
-        if let Err(e) = kafka_consumer.consume_logs(log_tx_clone).await {
-            error!("Kafka consumer error: {}", e);
+        tokio::select! {
+            res = kafka_consumer.consume_logs(log_tx_clone) => {
+                if let Err(e) = res {
+                    error!("Kafka consumer error: {}", e);
+                }
+            }
+            _ = kafka_shutdown_rx.recv() => {
+                info!("🛑 Kafka consumer received shutdown");
+            }
         }
     });
     
@@ -88,6 +117,15 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         kafka: kafka.clone(),
     });
+
+    info!("✅ Mini SIEM fully initialized");
+    info!("📡 API: http://localhost:8080");
+    info!("📊 Kafka: {}", kafka_brokers);
+    info!("💾 PostgreSQL: connected");
+    info!("🗄️  Redis: connected");
+    info!("📢 Slack: {}", if slack_url_copy.is_some() { "enabled" } else { "disabled" });
+    info!("🔄 Go Agent integration: ready");
+    info!("📋 Press Ctrl+C to stop");
 
     // Run API server until shutdown signal or error
     tokio::select! {
@@ -102,26 +140,17 @@ async fn main() -> anyhow::Result<()> {
         }
         _ = shutdown_signal() => {}
     }
-    
-    info!("✅ Mini SIEM fully initialized");
-    info!("📡 API: http://localhost:8080");
-    info!("📊 Kafka: {}", kafka_brokers);
-    info!("💾 PostgreSQL: connected");
-    info!("🗄️  Redis: connected");
-    info!("📢 Slack: {}", if slack_url_copy.is_some() { "enabled" } else { "disabled" });
-    info!("🔄 Go Agent integration: ready");
-    info!("📋 Press Ctrl+C to stop");
-    
-    // Wait for shutdown signal
-    shutdown_signal().await;
-    
+
     info!("🛑 Shutting down...");
-    
-    // Cancel tasks
-    detection_handle.abort();
-    alert_handle.abort();
-    kafka_handle.abort();
-    
+
+    // Notify background tasks to shutdown
+    let _ = shutdown_tx.send(());
+
+    // Await tasks (give them a moment to finish)
+    let _ = detection_handle.await;
+    let _ = alert_handle.await;
+    let _ = kafka_handle.await;
+
     info!("👋 Goodbye!");
     
     Ok(())
