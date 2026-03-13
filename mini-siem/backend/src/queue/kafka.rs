@@ -1,54 +1,86 @@
-// Kafka consumer/producer (in-memory placeholder implementation)
+// Kafka queue implementation using rdkafka (librdkafka binding).
 
 use anyhow::Result;
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::{Header, Message, OwnedHeaders};
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
+use serde_json;
 use tokio::sync::mpsc;
-use std::sync::Arc;
+use tokio_stream::StreamExt;
 
 use crate::types::Log;
 
-/// Simple placeholder for a Kafka queue client.
-///
-/// In this prototype, the "Kafka" queue is implemented as an in-memory channel.
-/// This allows the code to be structured around a queue interface while being
-/// runnable without a real Kafka cluster.
-#[derive(Clone)]
+const DEFAULT_TOPIC: &str = "siem-logs";
+
 pub struct KafkaQueue {
-    brokers: String,
-    tx: mpsc::Sender<Log>,
-    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Log>>>,
+    producer: FutureProducer,
+    consumer: StreamConsumer,
+    topic: String,
 }
 
 impl KafkaQueue {
     pub async fn new(brokers: &str) -> Result<Self> {
-        // In real implementation, connect to Kafka cluster here.
-        // For now we use an internal channel as the queue.
-        let (tx, rx) = mpsc::channel::<Log>(10_000);
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("message.timeout.ms", "5000")
+            .create()?;
+
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("group.id", "mini-siem-consumer")
+            .set("enable.partition.eof", "false")
+            .set("session.timeout.ms", "6000")
+            .set("enable.auto.commit", "true")
+            .create()?;
+
+        consumer.subscribe(&[DEFAULT_TOPIC])?;
+
         Ok(KafkaQueue {
-            brokers: brokers.to_string(),
-            tx,
-            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            producer,
+            consumer,
+            topic: DEFAULT_TOPIC.to_string(),
         })
     }
 
-    /// Send a log into the queue.
     pub async fn send_log(&self, log: &Log) -> Result<()> {
-        self.tx
-            .send(log.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to enqueue log: {}", e))
+        let payload = serde_json::to_string(log)?;
+        let headers = OwnedHeaders::new().insert(Header {
+            key: "source_ip",
+            value: Some(&log.source_ip),
+        });
+
+        let key = log.id.to_string();
+        let record = FutureRecord::to(&self.topic)
+            .payload(&payload)
+            .key(&key)
+            .headers(headers);
+
+        match self.producer.send(record, Timeout::Never).await {
+            Ok((_partition, _offset)) => Ok(()),
+            Err((e, _)) => Err(anyhow::anyhow!("Kafka send error: {:?}", e)),
+        }
     }
 
-    /// Consume logs from the queue and forward them into `tx`.
-    ///
-    /// This is what the consumer loop would do in a real Kafka client.
     pub async fn consume_logs(&self, tx: mpsc::Sender<Log>) -> Result<()> {
-        let mut rx = self.rx.lock().await;
-        while let Some(log) = rx.recv().await {
-            if tx.send(log).await.is_err() {
-                // downstream receiver is closed; stop consuming
-                break;
+        let mut stream = self.consumer.stream();
+
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(msg) => {
+                    if let Some(Ok(payload)) = msg.payload_view::<str>() {
+                        if let Ok(log) = serde_json::from_str::<Log>(payload) {
+                            let _ = tx.send(log).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("kafka consumer error: {}", e);
+                }
             }
         }
+
         Ok(())
     }
 }

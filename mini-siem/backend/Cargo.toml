@@ -47,6 +47,11 @@ reqwest = { version = "0.11", features = ["json"] }
 # Environment
 lazy_static = "1.4"
 
+# Kafka client (librdkafka-based)
+rdkafka = { version = "0.30", features = ["tokio"] }
+
+tokio-stream = "0.1"
+
 # metrics and monitoring
 prometheus = { version = "0.13", features = ["process"] }
 metrics = "0.21"
