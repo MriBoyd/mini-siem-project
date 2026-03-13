@@ -1,3 +1,4 @@
+use actix_web::web;
 use tokio::{signal, task, sync::mpsc};
 use tracing::{info, error};
 use tracing_subscriber;
@@ -82,9 +83,15 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     
+    // Create shared application state for the API handlers.
+    let app_state = web::Data::new(api::server::AppState {
+        db: db.clone(),
+        kafka: kafka.clone(),
+    });
+
     // Run API server until shutdown signal or error
     tokio::select! {
-        res = api::run_server() => {
+        res = api::run_server(app_state) => {
             if let Err(e) = res {
                 // If the address is in use, log a clearer message
                 if e.kind() == std::io::ErrorKind::AddrInUse {

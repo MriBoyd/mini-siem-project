@@ -1,16 +1,25 @@
 use actix_web::{web, App, HttpServer, middleware::Logger};
 use actix_cors::Cors;
 use tracing::info;
+use std::sync::Arc;
 
 use crate::api::handlers::{logs, health, alerts, dashboard};
+use crate::db::PostgresDb;
+use crate::queue::kafka::KafkaQueue;
 
-pub async fn run_server() -> std::io::Result<()> {
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Arc<PostgresDb>,
+    pub kafka: Arc<KafkaQueue>,
+}
+
+pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
     // allow binding address to be configured via env var
     let bind_address = std::env::var("API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     
     info!("🚀 Starting Mini SIEM API on http://{}", bind_address);
     
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         // Configure CORS
         let cors = Cors::default()
             .allow_any_origin()
@@ -18,6 +27,7 @@ pub async fn run_server() -> std::io::Result<()> {
             .allow_any_header();
         
         App::new()
+            .app_data(state.clone())
             .wrap(Logger::default())
             .wrap(cors)
             .service(health::root)

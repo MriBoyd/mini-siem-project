@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::fmt;
+use std::str::FromStr;
 
 use super::Log;
 
@@ -42,6 +43,21 @@ impl fmt::Display for AlertSeverity {
     }
 }
 
+impl FromStr for AlertSeverity {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "CRITICAL" => Ok(AlertSeverity::Critical),
+            "HIGH" => Ok(AlertSeverity::High),
+            "MEDIUM" => Ok(AlertSeverity::Medium),
+            "LOW" => Ok(AlertSeverity::Low),
+            "INFO" => Ok(AlertSeverity::Info),
+            _ => Err(()),
+        }
+    }
+}
+
 impl fmt::Display for AlertStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -49,6 +65,20 @@ impl fmt::Display for AlertStatus {
             AlertStatus::Investigating => write!(f, "INVESTIGATING"),
             AlertStatus::Resolved => write!(f, "RESOLVED"),
             AlertStatus::FalsePositive => write!(f, "FALSEPOSITIVE"),
+        }
+    }
+}
+
+impl FromStr for AlertStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "NEW" => Ok(AlertStatus::New),
+            "INVESTIGATING" => Ok(AlertStatus::Investigating),
+            "RESOLVED" => Ok(AlertStatus::Resolved),
+            "FALSEPOSITIVE" => Ok(AlertStatus::FalsePositive),
+            _ => Err(()),
         }
     }
 }
