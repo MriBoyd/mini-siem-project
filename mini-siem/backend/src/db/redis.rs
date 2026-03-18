@@ -64,4 +64,40 @@ impl RedisCache {
         let score: Option<u8> = self.conn.get(key).await?;
         Ok(score)
     }
+
+    // Sliding-window rate limiter using sorted set of timestamps (milliseconds)
+    // Returns true if allowed, false if rate limit exceeded.
+    pub async fn allow_sliding_window(&mut self, key: &str, window_ms: u64, limit: u32) -> Result<bool> {
+        // Lua script to remove old entries, count, add current timestamp if under limit, and set TTL
+        let script = r#"
+        local key = KEYS[1]
+        local now = tonumber(ARGV[1])
+        local window = tonumber(ARGV[2])
+        local limit = tonumber(ARGV[3])
+        local min = now - window
+        redis.call('ZREMRANGEBYSCORE', key, 0, min)
+        local current = redis.call('ZCARD', key)
+        if tonumber(current) < limit then
+            redis.call('ZADD', key, now, tostring(now))
+            redis.call('PEXPIRE', key, window)
+            return 1
+        end
+        return 0
+        "#;
+
+        // get current time in milliseconds
+        use chrono::Utc;
+        let now = Utc::now().timestamp_millis();
+
+        // execute script
+        let res: i32 = redis::Script::new(script)
+            .key(key)
+            .arg(now)
+            .arg(window_ms)
+            .arg(limit)
+            .invoke_async(&mut self.conn)
+            .await?;
+
+        Ok(res == 1)
+    }
 }

@@ -235,11 +235,10 @@ impl PostgresDb {
     }
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<(uuid::Uuid, String, Vec<String>)>> {
-        let row = sqlx::query_as!(
-            (uuid::Uuid, String, Vec<String>),
+        let row: Option<(uuid::Uuid, String, Vec<String>)> = sqlx::query_as::<_, (uuid::Uuid, String, Vec<String>)>(
             r#"SELECT id, password_hash, roles FROM users WHERE email = $1"#,
-            email
         )
+        .bind(email)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -271,7 +270,7 @@ impl PostgresDb {
     }
 
     pub async fn validate_refresh_token(&self, token_hash: &str) -> Result<Option<uuid::Uuid>> {
-        let row: Option<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        let row: Option<(uuid::Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as::<_, (uuid::Uuid, chrono::DateTime<chrono::Utc>)>(
             r#"SELECT user_id, expires_at FROM refresh_tokens WHERE token_hash = $1 AND revoked = false"#,
         )
         .bind(token_hash)

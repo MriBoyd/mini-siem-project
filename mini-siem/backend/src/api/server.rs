@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpServer, middleware::Logger};
+use actix_web::{web, App, HttpServer, middleware::{self, Logger}, HttpMessage};
 use actix_cors::Cors;
 use tracing::info;
 use std::sync::Arc;
@@ -35,18 +35,23 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
                 .app_data(web::Data::new(JwtConfig::from_env().expect("JWT config")))
             .wrap(Logger::default())
             .wrap(cors)
-            .service(health::root)
-            .service(health::health_check)
-            .service(logs::ingest_log)
-            .service(logs::ingest_batch)
-            .service(alerts::list_alerts)
-            .service(dashboard::get_stats)
+                .service(health::root)
+                .service(health::health_check)
+                .service(logs::ingest_log)
+                .service(logs::ingest_batch)
+                // public auth endpoints
                 .service(web::scope("/api/v1/auth")
                     .route("/register", web::post().to(auth_handlers::register))
                     .route("/login", web::post().to(auth_handlers::login))
                     .route("/refresh", web::post().to(auth_handlers::refresh))
                     .route("/logout", web::post().to(auth_handlers::logout))
-                    .route("/me", web::get().to(auth_handlers::me))
+                )
+                // protected API routes (handlers perform JWT validation)
+                .service(
+                    web::scope("/api/v1")
+                        .route("/me", web::get().to(auth_handlers::me))
+                        .service(alerts::list_alerts)
+                        .service(dashboard::get_stats)
                 )
     })
     .bind(bind_address)?

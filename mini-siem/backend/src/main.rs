@@ -13,6 +13,7 @@ mod db;
 mod alerting;
 mod queue;
 mod config;
+mod auth;
 
 use db::{PostgresDb};
 use db::redis::RedisCache;
