@@ -1,10 +1,9 @@
 # docker-compose.yml for the agent
-version: '3.8'
 
 services:
   agent:
     build:
-      context: ./agent-go
+      context: .
       dockerfile: Dockerfile
       target: builder  # For development, remove for production
     container_name: siem-agent
@@ -18,9 +17,9 @@ services:
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       # Mount config
-      - ./agent-go/config.json:/app/config.json:ro
+      - ./config.json:/app/config.json:ro
       # For development only - mount source
-      - ./agent-go:/app
+      - ./:/app
     environment:
       - TZ=UTC
       - LOG_LEVEL=debug
@@ -43,4 +42,4 @@ services:
 
 networks:
   siem-network:
-    external: true
+    driver: bridge
