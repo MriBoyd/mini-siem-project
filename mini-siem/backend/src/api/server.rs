@@ -4,6 +4,7 @@ use tracing::info;
 use std::sync::Arc;
 
 use crate::api::handlers::{logs, health, alerts, dashboard};
+use crate::auth::{handlers as auth_handlers, JwtConfig};
 use crate::db::PostgresDb;
 use crate::queue::kafka::KafkaQueue;
 use tokio::sync::mpsc;
@@ -31,6 +32,7 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
         
         App::new()
             .app_data(state.clone())
+                .app_data(web::Data::new(JwtConfig::from_env().expect("JWT config")))
             .wrap(Logger::default())
             .wrap(cors)
             .service(health::root)
@@ -39,6 +41,13 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
             .service(logs::ingest_batch)
             .service(alerts::list_alerts)
             .service(dashboard::get_stats)
+                .service(web::scope("/api/v1/auth")
+                    .route("/register", web::post().to(auth_handlers::register))
+                    .route("/login", web::post().to(auth_handlers::login))
+                    .route("/refresh", web::post().to(auth_handlers::refresh))
+                    .route("/logout", web::post().to(auth_handlers::logout))
+                    .route("/me", web::get().to(auth_handlers::me))
+                )
     })
     .bind(bind_address)?
     .run()
