@@ -35,6 +35,9 @@ async fn main() -> anyhow::Result<()> {
     let redis_url = cfg.redis_url.clone();
     let kafka_brokers = cfg.kafka_brokers.clone();
     let slack_webhook = cfg.slack_webhook.clone();
+
+    info!("✅ Configuration loaded. Connecting to database and message brokers...");
+
     
     // Initialize database
     let db = Arc::new(PostgresDb::new(&database_url).await?);
