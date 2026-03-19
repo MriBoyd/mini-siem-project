@@ -50,6 +50,9 @@ lazy_static = "1.4"
 # Kafka client (librdkafka-based)
 rdkafka = { version = "0.30", features = ["tokio"] }
 
+# JWT support
+jsonwebtoken = "8"
+
 tokio-stream = "0.1"
 
 # metrics and monitoring

@@ -1,30 +1,18 @@
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
-use serde::{Deserialize, Serialize};
+pub mod jwt;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,      // user id
-    role: UserRole,   // admin, analyst, viewer
-    exp: usize,       // expiration
-}
+use actix_web::{HttpRequest, HttpResponse, web};
+use crate::db::PostgresDb;
 
-#[derive(Debug, Serialize, Deserialize)]
-enum UserRole {
-    Admin,
-    Analyst,
-    Viewer,
-}
-
-// Middleware for Actix-web
+// Middleware placeholder for Actix-web
 pub struct AuthMiddleware {
-    // ...
+    // Implementation would validate JWTs, attach user info to request extensions
 }
 
-// Add to your API handlers
-async fn get_alerts(
-    req: HttpRequest,
-    db: web::Data<PostgresDb>,
-    _: AuthMiddleware,  // This enforces auth
+// Example protected handler signature
+pub async fn get_alerts(
+    _req: HttpRequest,
+    _db: web::Data<PostgresDb>,
+    _auth: AuthMiddleware,
 ) -> HttpResponse {
-    // Only authenticated users reach here
+    HttpResponse::Ok().finish()
 }
