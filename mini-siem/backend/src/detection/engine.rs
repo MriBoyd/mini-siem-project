@@ -5,7 +5,6 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::types::{Log, Alert};
 use crate::db::{PostgresDb, RedisCache};
-use crate::db::models::rule::DetectionRule;
 use super::rules::{
     Rule, 
     brute_force::BruteForceRule,

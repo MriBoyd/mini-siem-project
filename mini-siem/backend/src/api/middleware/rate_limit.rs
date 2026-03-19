@@ -1,5 +1,2 @@
 // Rate limiting middleware
-
-pub fn limit_requests() {
-    // TODO
-}
+// TODO: Implement rate limiting middleware

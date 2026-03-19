@@ -74,3 +74,53 @@ impl Log {
         self.message.contains("Accepted password")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn create_test_log(event_type: &str, message: &str) -> Log {
+        let now = Utc::now();
+        Log {
+            id: Uuid::new_v4(),
+            timestamp: now,
+            event_type: event_type.to_string(),
+            source_ip: "127.0.0.1".to_string(),
+            target_user: None,
+            service: None,
+            message: message.to_string(),
+            severity: LogSeverity::Info,
+            metadata: serde_json::Value::Null,
+            received_at: now,
+        }
+    }
+
+    #[test]
+    fn test_is_failed_login() {
+        let log1 = create_test_log("login_failed", "Failed to login");
+        assert!(log1.is_failed_login());
+
+        let log2 = create_test_log("system", "Failed password for root from 192.168.1.1 port 22 ssh2");
+        assert!(log2.is_failed_login());
+
+        let log3 = create_test_log("auth", "authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.168.1.1");
+        assert!(log3.is_failed_login());
+
+        let log4 = create_test_log("system", "Some other message");
+        assert!(!log4.is_failed_login());
+    }
+
+    #[test]
+    fn test_is_successful_login() {
+        let log1 = create_test_log("login_success", "User root logged in");
+        assert!(log1.is_successful_login());
+
+        let log2 = create_test_log("ssh", "Accepted password for root from 192.168.1.1 port 22 ssh2");
+        assert!(log2.is_successful_login());
+
+        let log3 = create_test_log("system", "Some other message");
+        assert!(!log3.is_successful_login());
+    }
+}
