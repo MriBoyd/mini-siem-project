@@ -5,6 +5,7 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::types::{Alert, Log};
+use crate::db::models::user::User;
 use serde_json::Value;
 
 #[derive(sqlx::FromRow, Debug)]
@@ -216,6 +217,41 @@ impl PostgresDb {
         .await?;
 
         Ok((total_logs, total_alerts, active_alerts, critical_alerts))
+    }
+
+    pub async fn create_user(&self, email: &str, password_hash: &str, role: &str) -> Result<User> {
+        let user = sqlx::query_as::<_, User>(
+            "INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) RETURNING id, email, password_hash, role, created_at, updated_at",
+        )
+        .bind(email)
+        .bind(password_hash)
+        .bind(role)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(user)
+    }
+
+    pub async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
+        let user = sqlx::query_as::<_, User>(
+            "SELECT id, email, password_hash, role, created_at, updated_at FROM users WHERE email = $1",
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(user)
+    }
+
+    pub async fn get_user_by_id(&self, id: Uuid) -> Result<Option<User>> {
+        let user = sqlx::query_as::<_, User>(
+            "SELECT id, email, password_hash, role, created_at, updated_at FROM users WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(user)
     }
 }
 

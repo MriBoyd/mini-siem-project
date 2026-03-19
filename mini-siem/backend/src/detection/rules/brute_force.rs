@@ -50,7 +50,7 @@ impl Rule for BruteForceRule {
         
         let key = log.source_ip.clone();
         
-        let mut cache = self.redis.lock().await;
+        let cache = self.redis.lock().await;
         // increment counter in redis with expiry equal to window
         let count = cache.increment_counter(&key, self.window_seconds as u64).await?;
         if count >= self.threshold {

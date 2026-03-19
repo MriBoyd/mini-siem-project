@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     
     // Start detection engine
-    let detection_engine = detection::DetectionEngine::new(alert_tx.clone(), redis, db.clone()).await;
+    let detection_engine = detection::DetectionEngine::new(alert_tx.clone(), redis.clone(), db.clone()).await;
     let mut detect_shutdown_rx = shutdown_tx.subscribe();
     let detection_handle = task::spawn(async move {
         loop {
@@ -146,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
     // Create shared application state for the API handlers.
     let app_state = web::Data::new(api::server::AppState {
         db: db.clone(),
+        redis: redis.clone(),
         kafka: kafka.clone(),
         log_tx: log_tx.clone(),
     });

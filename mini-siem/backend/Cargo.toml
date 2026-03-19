@@ -53,6 +53,12 @@ rdkafka = { version = "0.30", features = ["tokio"] }
 # JWT support
 jsonwebtoken = "8"
 
+# Authentication
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.21"
+futures-util = "0.3"
+
 tokio-stream = "0.1"
 
 # metrics and monitoring
