@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, HttpRequest};
+use actix_web::{web, HttpResponse};
 use serde::Deserialize;
 use anyhow::Result;
 use crate::db::PostgresDb;
@@ -6,8 +6,6 @@ use crate::auth::jwt::JwtConfig;
 use argon2::{Argon2, password_hash::{PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng, PasswordHash}};
 use rand::{RngCore};
 use chrono::{Utc, Duration};
-use base64::Engine;
-use sha2::Digest;
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -95,14 +93,7 @@ pub async fn logout(db: web::Data<PostgresDb>, req: web::Json<RefreshRequest>) -
     Ok(HttpResponse::Ok().finish())
 }
 
-pub async fn me(req: HttpRequest) -> actix_web::Result<HttpResponse> {
-    use crate::auth::jwt::JwtConfig;
-
-    let jwt = req.app_data::<web::Data<JwtConfig>>().cloned().ok_or_else(|| actix_web::error::ErrorInternalServerError("JWT config missing"))?;
-    let header = req.headers().get("Authorization").and_then(|h| h.to_str().ok()).ok_or_else(|| actix_web::error::ErrorUnauthorized("missing auth header"))?;
-    if !header.starts_with("Bearer ") { return Err(actix_web::error::ErrorUnauthorized("invalid auth header")); }
-    let token = header.trim_start_matches("Bearer ").trim();
-    let data = jwt.verify_access_token(token).map_err(|_| actix_web::error::ErrorUnauthorized("invalid token"))?;
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({"sub": data.claims.sub, "roles": data.claims.roles})))
+pub async fn me() -> actix_web::Result<HttpResponse> {
+    // placeholder: middleware should set user info in request extensions
+    Ok(HttpResponse::Ok().json(serde_json::json!({"msg":"protected"})))
 }

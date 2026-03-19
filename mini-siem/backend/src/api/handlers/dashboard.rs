@@ -1,23 +1,15 @@
-use actix_web::{get, web, HttpResponse, Responder, HttpRequest};
+use actix_web::{get, web, HttpResponse, Responder, HttpRequest, HttpMessage};
 
 use crate::api::server::AppState;
-use crate::auth::jwt::JwtConfig;
-
-fn extract_claims_from_request(req: &HttpRequest) -> Result<crate::auth::jwt::Claims, actix_web::Error> {
-    let jwt = req.app_data::<web::Data<JwtConfig>>().cloned().ok_or_else(|| actix_web::error::ErrorInternalServerError("JWT config missing"))?;
-    let header = req.headers().get("Authorization").and_then(|h| h.to_str().ok()).ok_or_else(|| actix_web::error::ErrorUnauthorized("missing auth header"))?;
-    if !header.starts_with("Bearer ") { return Err(actix_web::error::ErrorUnauthorized("invalid auth header")); }
-    let token = header.trim_start_matches("Bearer ").trim();
-    let data = jwt.verify_access_token(token).map_err(|_| actix_web::error::ErrorUnauthorized("invalid token"))?;
-    Ok(data.claims)
-}
+use crate::auth::jwt::Claims;
 
 #[get("/api/v1/dashboard/stats")]
 pub async fn get_stats(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
     // RBAC: only users with 'analyst' or 'admin' roles may view dashboard stats
-    let claims = match extract_claims_from_request(&req) {
-        Ok(c) => c,
-        Err(e) => return e.error_response(),
+    let exts = req.extensions();
+    let claims = match exts.get::<Claims>() {
+        Some(c) => c,
+        None => return actix_web::error::ErrorUnauthorized("missing auth").error_response(),
     };
 
     let roles = &claims.roles;
