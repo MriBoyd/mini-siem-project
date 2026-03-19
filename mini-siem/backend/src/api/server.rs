@@ -3,7 +3,7 @@ use actix_cors::Cors;
 use tracing::info;
 use std::sync::Arc;
 
-use crate::api::handlers::{logs, health, alerts, dashboard, auth};
+use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules};
 use crate::api::middleware::auth::JwtAuth;
 use crate::db::PostgresDb;
 use crate::db::redis::RedisCache;
@@ -56,6 +56,12 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
                     .service(auth::me)
                     .service(alerts::list_alerts)
                     .service(dashboard::get_stats)
+                    .service(rules::list_rules)
+                    .service(rules::create_rule)
+                    .service(rules::get_rule)
+                    .service(rules::update_rule)
+                    .service(rules::delete_rule)
+                    .service(rules::toggle_rule)
             )
             .service(logs::ingest_log)
             .service(logs::ingest_batch)

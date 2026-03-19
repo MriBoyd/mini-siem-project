@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 
 use crate::types::{Alert, Log};
 use crate::db::models::user::User;
+use crate::db::models::rule::{DetectionRule, RuleCreate};
 use serde_json::Value;
 
 #[derive(sqlx::FromRow, Debug)]
@@ -252,6 +253,92 @@ impl PostgresDb {
         .await?;
 
         Ok(user)
+    }
+
+    // Rules management
+    pub async fn get_all_rules(&self) -> Result<Vec<DetectionRule>> {
+        let rules = sqlx::query_as::<_, DetectionRule>(
+            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at FROM detection_rules"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rules)
+    }
+
+    pub async fn get_enabled_rules(&self) -> Result<Vec<DetectionRule>> {
+        let rules = sqlx::query_as::<_, DetectionRule>(
+            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at FROM detection_rules WHERE is_enabled = true"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rules)
+    }
+
+    pub async fn create_rule(&self, rule: &RuleCreate) -> Result<DetectionRule> {
+        let record = sqlx::query_as::<_, DetectionRule>(
+            r#"
+            INSERT INTO detection_rules (name, description, rule_type, severity, threshold, window_seconds)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at
+            "#
+        )
+        .bind(&rule.name)
+        .bind(&rule.description)
+        .bind(&rule.rule_type)
+        .bind(&rule.severity)
+        .bind(rule.threshold)
+        .bind(rule.window_seconds)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(record)
+    }
+
+    pub async fn get_rule_by_id(&self, id: Uuid) -> Result<Option<DetectionRule>> {
+        let rule = sqlx::query_as::<_, DetectionRule>(
+            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at FROM detection_rules WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(rule)
+    }
+
+    pub async fn update_rule(&self, id: Uuid, update: crate::db::models::rule::RuleUpdate) -> Result<DetectionRule> {
+        let existing = self.get_rule_by_id(id).await?.ok_or_else(|| anyhow::anyhow!("Rule not found"))?;
+        
+        let name = update.name.unwrap_or(existing.name);
+        let description = update.description.or(existing.description);
+        let severity = update.severity.unwrap_or(existing.severity);
+        let threshold = update.threshold.or(existing.threshold);
+        let window_seconds = update.window_seconds.or(existing.window_seconds);
+        let is_enabled = update.is_enabled.unwrap_or(existing.is_enabled);
+
+        let record = sqlx::query_as::<_, DetectionRule>(
+            r#"
+            UPDATE detection_rules 
+            SET name = $1, description = $2, severity = $3, threshold = $4, window_seconds = $5, is_enabled = $6, updated_at = NOW()
+            WHERE id = $7
+            RETURNING id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at
+            "#
+        )
+        .bind(name)
+        .bind(description)
+        .bind(severity)
+        .bind(threshold)
+        .bind(window_seconds)
+        .bind(is_enabled)
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(record)
+    }
+
+    pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM detection_rules WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

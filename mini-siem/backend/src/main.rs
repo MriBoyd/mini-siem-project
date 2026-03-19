@@ -60,13 +60,20 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     
     // Start detection engine
-    let detection_engine = detection::DetectionEngine::new(alert_tx.clone(), redis.clone(), db.clone()).await;
+    let detection_engine = Arc::new(detection::DetectionEngine::new(alert_tx.clone(), redis.clone(), db.clone()).await);
     let mut detect_shutdown_rx = shutdown_tx.subscribe();
+    let detection_engine_clone = detection_engine.clone();
     let detection_handle = task::spawn(async move {
+        let mut reload_interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             tokio::select! {
                 Some(log) = log_rx.recv() => {
-                    detection_engine.process_log(log).await;
+                    detection_engine_clone.process_log(log).await;
+                }
+                _ = reload_interval.tick() => {
+                    if let Err(e) = detection_engine_clone.reload_rules().await {
+                        error!("Failed to reload rules: {}", e);
+                    }
                 }
                 _ = detect_shutdown_rx.recv() => {
                     info!("🛑 Detection engine received shutdown");

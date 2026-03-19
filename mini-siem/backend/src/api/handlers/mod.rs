@@ -3,3 +3,4 @@ pub mod health;
 pub mod alerts;
 pub mod dashboard;
 pub mod auth;
+pub mod rules;
