@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 use std::sync::Arc;
 
 use crate::types::{Log, Alert, AlertSeverity};
@@ -11,7 +10,7 @@ pub struct BruteForceRule {
     id: String,
     threshold: u32,
     window_seconds: i64,
-    redis: Arc<Mutex<dyn Cache>>,
+    redis: Arc<dyn Cache>,
 }
 
 impl BruteForceRule {
@@ -20,7 +19,7 @@ impl BruteForceRule {
         name: String,
         threshold: u32,
         window_seconds: i64,
-        redis: Arc<Mutex<dyn Cache>>,
+        redis: Arc<dyn Cache>,
     ) -> Self {
         Self {
             name,
@@ -50,9 +49,8 @@ impl Rule for BruteForceRule {
         
         let key = log.source_ip.clone();
         
-        let cache = self.redis.lock().await;
         // increment counter in redis with expiry equal to window
-        let count = cache.increment_counter(&key, self.window_seconds as u64).await?;
+        let count = self.redis.increment_counter(&key, self.window_seconds as u64).await?;
         if count >= self.threshold {
             Ok(Some(Alert::new(
                 self.id.clone(),

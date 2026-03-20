@@ -53,8 +53,13 @@ impl PostgresDb {
     pub async fn new(database_url: &str) -> Result<Self> {
         info!("📦 Connecting to PostgreSQL...");
         
+        let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20);
+
         let pool = PgPoolOptions::new()
-            .max_connections(20)
+            .max_connections(max_connections)
             .connect(database_url)
             .await?;
         
@@ -64,7 +69,7 @@ impl PostgresDb {
             .run(&pool)
             .await?;
         
-        info!("✅ Connected to PostgreSQL");
+        info!("✅ Connected to PostgreSQL with pool size: {}", max_connections);
         
         Ok(Self { pool })
     }

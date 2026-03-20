@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::types::{Log, Alert};
 use crate::db::Cache;
@@ -12,7 +11,7 @@ pub struct PortScanRule {
     name: String,
     port_threshold: u32,
     window_seconds: i64,
-    redis: Arc<Mutex<dyn Cache>>,
+    redis: Arc<dyn Cache>,
 }
 
 impl PortScanRule {
@@ -21,7 +20,7 @@ impl PortScanRule {
         name: String,
         port_threshold: u32,
         window_seconds: i64,
-        redis: Arc<Mutex<dyn Cache>>,
+        redis: Arc<dyn Cache>,
     ) -> Self {
         Self { id, name, port_threshold, window_seconds, redis }
     }

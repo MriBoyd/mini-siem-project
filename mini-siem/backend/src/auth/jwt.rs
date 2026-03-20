@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use chrono::{Utc, Duration};
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, TokenData, Algorithm};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, Context};
 use std::env;
+use std::sync::OnceLock;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -11,6 +12,37 @@ pub struct Claims {
     pub roles: Vec<String>,
     pub exp: usize,
     pub iat: usize,
+}
+
+static ENCODING_KEY: OnceLock<EncodingKey> = OnceLock::new();
+static DECODING_KEY: OnceLock<DecodingKey> = OnceLock::new();
+
+fn get_encoding_key() -> Result<&'static EncodingKey> {
+    if let Some(key) = ENCODING_KEY.get() {
+        return Ok(key);
+    }
+
+    let private_key = env::var("JWT_PRIVATE_KEY")
+        .context("JWT_PRIVATE_KEY not set")?;
+    
+    let key = EncodingKey::from_rsa_pem(private_key.as_bytes())
+        .context("Failed to create encoding key")?;
+    
+    Ok(ENCODING_KEY.get_or_init(|| key))
+}
+
+fn get_decoding_key() -> Result<&'static DecodingKey> {
+    if let Some(key) = DECODING_KEY.get() {
+        return Ok(key);
+    }
+
+    let public_key = env::var("JWT_PUBLIC_KEY")
+        .context("JWT_PUBLIC_KEY not set")?;
+    
+    let key = DecodingKey::from_rsa_pem(public_key.as_bytes())
+        .context("Failed to create decoding key")?;
+    
+    Ok(DECODING_KEY.get_or_init(|| key))
 }
 
 pub fn create_claims(user_id: &str, email: &str, roles: Vec<&str>, minutes: i64) -> Claims {
@@ -28,28 +60,18 @@ pub fn create_claims(user_id: &str, email: &str, roles: Vec<&str>, minutes: i64)
 }
 
 pub fn encode_jwt(claims: &Claims) -> Result<String> {
-    let private_key = env::var("JWT_PRIVATE_KEY")
-        .map_err(|_| anyhow!("JWT_PRIVATE_KEY not set"))?;
-    
-    let encoding_key = EncodingKey::from_rsa_pem(private_key.as_bytes())
-        .map_err(|e| anyhow!("Failed to create encoding key: {}", e))?;
-    
+    let encoding_key = get_encoding_key()?;
     let mut header = Header::new(Algorithm::RS256);
     header.typ = Some("JWT".to_string());
     
-    encode(&header, claims, &encoding_key)
-        .map_err(|e| anyhow!("Failed to encode JWT: {}", e))
+    encode(&header, claims, encoding_key)
+        .context("Failed to encode JWT")
 }
 
 pub fn decode_jwt(token: &str) -> Result<TokenData<Claims>> {
-    let public_key = env::var("JWT_PUBLIC_KEY")
-        .map_err(|_| anyhow!("JWT_PUBLIC_KEY not set"))?;
-    
-    let decoding_key = DecodingKey::from_rsa_pem(public_key.as_bytes())
-        .map_err(|e| anyhow!("Failed to create decoding key: {}", e))?;
-    
+    let decoding_key = get_decoding_key()?;
     let validation = Validation::new(Algorithm::RS256);
     
-    decode::<Claims>(token, &decoding_key, &validation)
-        .map_err(|e| anyhow!("Failed to decode JWT: {}", e))
+    decode::<Claims>(token, decoding_key, &validation)
+        .context("Failed to decode JWT")
 }

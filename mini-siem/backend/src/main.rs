@@ -6,18 +6,12 @@ use std::sync::atomic::AtomicUsize;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics::{gauge, register_gauge};
 
-mod api;
-mod types;
-mod detection;
-mod db;
-mod alerting;
-mod queue;
-mod config;
-mod auth;
-
-use db::{PostgresDb};
-use db::redis::RedisCache;
-use queue::kafka::KafkaQueue;
+use mini_siem::db::PostgresDb;
+use mini_siem::db::redis::RedisCache;
+use mini_siem::queue::kafka::KafkaQueue;
+use mini_siem::response::engine::ResponseEngine;
+use mini_siem::response::actions::WebhookAction;
+use mini_siem::{api, types, detection, alerting, config};
 
 
 #[tokio::main]
@@ -54,13 +48,22 @@ async fn main() -> anyhow::Result<()> {
     let slack_url_copy = slack_webhook.clone();
     let slack = Arc::new(alerting::notifiers::slack::SlackNotifier::new(slack_webhook.clone()));
     
+    // Initialize Response Engine (SOAR)
+    let response_engine = Arc::new(ResponseEngine::new());
+    if let Some(webhook_url) = slack_webhook.clone() {
+        // Automatically add a critical response policy to hit the webhook
+        info!("🤖 Configuring Response Engine: Critical alerts will trigger Slack webhook");
+        let action = Arc::new(WebhookAction::new("Critical Slack Hook", webhook_url));
+        response_engine.add_severity_policy(mini_siem::types::AlertSeverity::Critical, action).await;
+    }
+
     // Create channels
     let (log_tx, mut log_rx) = mpsc::channel::<types::Log>(10000);
     let (alert_tx, mut alert_rx) = mpsc::channel::<types::Alert>(1000);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     
     // Start detection engine
-    let detection_engine = Arc::new(detection::DetectionEngine::new(alert_tx.clone(), redis.clone(), db.clone()).await);
+    let detection_engine = Arc::new(detection::engine::DetectionEngine::new(alert_tx.clone(), redis.clone(), db.clone(), response_engine.clone()).await);
     let mut detect_shutdown_rx = shutdown_tx.subscribe();
     let detection_engine_clone = detection_engine.clone();
     let detection_handle = task::spawn(async move {
@@ -165,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
     info!("🗄️  Redis: connected");
     info!("📢 Slack: {}", if slack_url_copy.is_some() { "enabled" } else { "disabled" });
     info!("🔄 Go Agent integration: ready");
+    info!("🤖 SOAR Engine: active");
     info!("📋 Press Ctrl+C to stop");
 
     // Run API server until shutdown signal or error

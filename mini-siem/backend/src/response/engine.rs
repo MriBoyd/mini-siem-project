@@ -1,0 +1,78 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{info, error};
+use crate::types::{Alert, AlertSeverity};
+use super::actions::ResponseAction;
+
+pub struct ResponseEngine {
+    // Map: Rule ID -> List of Actions
+    rule_policies: Arc<RwLock<HashMap<String, Vec<Arc<dyn ResponseAction>>>>>,
+    // Map: Severity -> List of Actions (Global default for severity)
+    severity_policies: Arc<RwLock<HashMap<AlertSeverity, Vec<Arc<dyn ResponseAction>>>>>,
+}
+
+impl ResponseEngine {
+    pub fn new() -> Self {
+        Self {
+            rule_policies: Arc::new(RwLock::new(HashMap::new())),
+            severity_policies: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub async fn add_rule_policy(&self, rule_id: &str, action: Arc<dyn ResponseAction>) {
+        let mut policies = self.rule_policies.write().await;
+        policies.entry(rule_id.to_string())
+            .or_insert_with(Vec::new)
+            .push(action);
+    }
+
+    pub async fn add_severity_policy(&self, severity: AlertSeverity, action: Arc<dyn ResponseAction>) {
+        let mut policies = self.severity_policies.write().await;
+        policies.entry(severity)
+            .or_insert_with(Vec::new)
+            .push(action);
+    }
+
+    pub async fn handle_alert(&self, alert: &Alert) {
+        let mut actions_to_run: Vec<Arc<dyn ResponseAction>> = Vec::new();
+
+        // 1. Check specific rule policies
+        {
+            let rule_policies = self.rule_policies.read().await;
+            if let Some(actions) = rule_policies.get(&alert.rule_id) {
+                for action in actions {
+                    actions_to_run.push(Arc::clone(action));
+                }
+            }
+        }
+
+        // 2. Check severity policies
+        {
+            let severity_policies = self.severity_policies.read().await;
+            if let Some(actions) = severity_policies.get(&alert.severity) {
+                for action in actions {
+                    actions_to_run.push(Arc::clone(action));
+                }
+            }
+        }
+
+        if actions_to_run.is_empty() {
+            return;
+        }
+
+        info!("⚡ Spawning response task with {} actions for alert {}", actions_to_run.len(), alert.id);
+
+        let alert_clone = alert.clone();
+        tokio::spawn(async move {
+            for action in actions_to_run {
+                let action_name = action.name().to_string();
+                info!("▶️ Starting Action '{}' for alert {}", action_name, alert_clone.id);
+                match action.execute(&alert_clone).await {
+                    Ok(_) => info!("✅ Action '{}' completed for alert {}", action_name, alert_clone.id),
+                    Err(e) => error!("❌ Action '{}' failed for alert {}: {}", action_name, alert_clone.id, e),
+                }
+            }
+        });
+    }
+}
