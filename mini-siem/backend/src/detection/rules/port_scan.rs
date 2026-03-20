@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::types::{Log, Alert};
-use crate::db::RedisCache;
+use crate::db::Cache;
 use super::Rule;
 
 #[allow(dead_code)]
@@ -12,7 +12,7 @@ pub struct PortScanRule {
     name: String,
     port_threshold: u32,
     window_seconds: i64,
-    redis: Arc<Mutex<RedisCache>>,
+    redis: Arc<Mutex<dyn Cache>>,
 }
 
 impl PortScanRule {
@@ -21,7 +21,7 @@ impl PortScanRule {
         name: String,
         port_threshold: u32,
         window_seconds: i64,
-        redis: Arc<Mutex<RedisCache>>,
+        redis: Arc<Mutex<dyn Cache>>,
     ) -> Self {
         Self { id, name, port_threshold, window_seconds, redis }
     }

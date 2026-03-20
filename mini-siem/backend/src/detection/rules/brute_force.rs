@@ -3,7 +3,7 @@ use tokio::sync::Mutex;
 use std::sync::Arc;
 
 use crate::types::{Log, Alert, AlertSeverity};
-use crate::RedisCache;
+use crate::db::Cache;
 use super::Rule;
 
 pub struct BruteForceRule {
@@ -11,7 +11,7 @@ pub struct BruteForceRule {
     id: String,
     threshold: u32,
     window_seconds: i64,
-    redis: Arc<Mutex<RedisCache>>,
+    redis: Arc<Mutex<dyn Cache>>,
 }
 
 impl BruteForceRule {
@@ -20,7 +20,7 @@ impl BruteForceRule {
         name: String,
         threshold: u32,
         window_seconds: i64,
-        redis: Arc<Mutex<RedisCache>>,
+        redis: Arc<Mutex<dyn Cache>>,
     ) -> Self {
         Self {
             name,

@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::api::server::AppState;
 use crate::auth::{hash_password, verify_password, create_claims, encode_jwt, generate_refresh_token, TokenPair, Claims};
+use crate::db::cache::Cache;
 use crate::db::models::user::{UserResponse};
 
 #[derive(Deserialize)]
