@@ -5,6 +5,8 @@ use anyhow::Result;
 pub trait Cache: Send + Sync {
     async fn increment_counter(&self, key: &str, expiry_seconds: u64) -> Result<u32>;
     async fn get_counter(&self, key: &str) -> Result<Option<u32>>;
+    async fn decrement_counter(&self, key: &str) -> Result<u32>;
+    async fn set_counter(&self, key: &str, value: u64, expiry_seconds: Option<u64>) -> Result<()>;
     
     async fn set_suppression(&self, rule_id: &str, ip: &str, ttl_seconds: u64) -> Result<()>;
     async fn is_suppressed(&self, rule_id: &str, ip: &str) -> Result<bool>;

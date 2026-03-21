@@ -30,6 +30,23 @@ impl Cache for RedisCache {
         let count: Option<u32> = conn.get(key).await?;
         Ok(count)
     }
+
+    async fn set_counter(&self, key: &str, value: u64, expiry_seconds: Option<u64>) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.set(key, value).await?;
+        if let Some(exp) = expiry_seconds {
+            let _: () = conn.expire(key, exp as i64).await?;
+        }
+        Ok(())
+    }
+
+    async fn decrement_counter(&self, key: &str) -> Result<u32> {
+        let mut conn = self.conn.clone();
+        // DECR returns value which may be negative; clamp at 0
+        let val: i64 = conn.decr(key, 1).await?;
+        let v = if val < 0 { 0 } else { val as u32 };
+        Ok(v)
+    }
     
     // Store alert suppression state
     async fn set_suppression(&self, rule_id: &str, ip: &str, ttl_seconds: u64) -> Result<()> {

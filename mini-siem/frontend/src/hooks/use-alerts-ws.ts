@@ -42,7 +42,8 @@ export default function useAlertsWS() {
         if (t === 'alert') {
           const alert: Alert = data;
           queryClient.setQueryData<Alert[]>(['alerts'], (old = []) => {
-            const arr = [alert, ...old];
+            const filtered = (old || []).filter((a) => a.id !== alert.id);
+            const arr = [alert, ...filtered];
             return arr.slice(0, 50);
           });
           // Update dashboard stats cache incrementally
@@ -52,11 +53,14 @@ export default function useAlertsWS() {
               ...old,
               total_alerts: (old.total_alerts || 0) + 1,
               active_alerts: (old.active_alerts || 0) + 1,
+              critical_alerts: (old.critical_alerts || 0) + (alert.severity === 'CRITICAL' ? 1 : 0),
             };
           });
         } else if (t === 'stats') {
           // Replace dashboard stats with authoritative data from server
           queryClient.setQueryData(['dashboard-stats'], () => data);
+          // Also trigger a refetch to ensure any server-side derived state is applied
+          queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
         }
       } catch (e) {
         // ignore malformed messages

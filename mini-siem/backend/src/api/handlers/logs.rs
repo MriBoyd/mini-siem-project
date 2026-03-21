@@ -5,6 +5,7 @@ use chrono::{Utc, DateTime};
 use tracing::{info, warn};
 
 use crate::api::server::AppState;
+use crate::db::cache::Cache;
 use crate::types::{Log, LogSeverity};
 use tokio::sync::mpsc::error::TrySendError;
 
@@ -78,6 +79,36 @@ pub async fn ingest_log(
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
     
+    // Update Redis counter for total logs and publish aggregated stats (best-effort)
+    if let Ok(_) = state.redis.increment_counter("siem:stats:total_logs", 86400).await {
+        // Try to read counters from Redis
+        let total_logs: Option<u32> = state.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
+        let total_alerts: Option<u32> = state.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
+        let active_alerts: Option<u32> = state.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
+        let critical_alerts: Option<u32> = state.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
+
+        if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (total_logs, total_alerts, active_alerts, critical_alerts) {
+            let stats = crate::types::DashboardStats {
+                total_logs: tl as i64,
+                total_alerts: ta as i64,
+                active_alerts: aa as i64,
+                critical_alerts: ca as i64,
+            };
+            let _ = state.stats_tx.send(stats);
+        } else {
+            // Fallback: compute from DB and seed Redis
+            if let Ok((tl, ta, aa, ca)) = state.db.get_stats().await {
+                let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
+                let _ = state.stats_tx.send(stats.clone());
+                // Seed Redis counters (best-effort)
+                let _ = state.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
+                let _ = state.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
+                let _ = state.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
+                let _ = state.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
+            }
+        }
+    }
+
     HttpResponse::Accepted().json(IngestLogResponse {
         id: log_id.to_string(),
         status: "accepted".to_string(),
@@ -145,5 +176,33 @@ pub async fn ingest_batch(
     }
     
     info!("📦 Accepted batch of {} logs", responses.len());
+    // Update Redis counter for total logs by incrementing per log and publish aggregated stats (best-effort)
+    for _ in 0..responses.len() {
+        let _ = state.redis.increment_counter("siem:stats:total_logs", 86400).await;
+    }
+
+    // Try to read counters from Redis
+    let total_logs: Option<u32> = state.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
+    let total_alerts: Option<u32> = state.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
+    let active_alerts: Option<u32> = state.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
+    let critical_alerts: Option<u32> = state.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
+
+    if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (total_logs, total_alerts, active_alerts, critical_alerts) {
+        let stats = crate::types::DashboardStats {
+            total_logs: tl as i64,
+            total_alerts: ta as i64,
+            active_alerts: aa as i64,
+            critical_alerts: ca as i64,
+        };
+        let _ = state.stats_tx.send(stats);
+    } else if let Ok((tl, ta, aa, ca)) = state.db.get_stats().await {
+        let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
+        let _ = state.stats_tx.send(stats.clone());
+        // Seed Redis (best-effort)
+        let _ = state.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
+        let _ = state.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
+        let _ = state.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
+        let _ = state.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
+    }
     HttpResponse::Accepted().json(responses)
 }

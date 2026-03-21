@@ -5,8 +5,10 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::types::{Alert, Log};
+use crate::db::redis::RedisCache;
 use crate::db::models::user::User;
 use crate::db::models::rule::{DetectionRule, RuleCreate};
+use crate::db::cache::Cache;
 use serde_json::Value;
 use crate::auth::password::hash_password;
 
@@ -158,7 +160,14 @@ impl PostgresDb {
         Ok(())
     }
     
-    pub async fn update_alert(&self, alert: &Alert) -> Result<()> {
+    pub async fn update_alert(&self, alert: &Alert, redis: Option<RedisCache>) -> Result<()> {
+        // Fetch previous status to determine if active_alerts counter should change
+        let prev_status: Option<String> = query_scalar(
+            "SELECT status FROM alerts WHERE id = $1"
+        )
+        .bind(alert.id)
+        .fetch_optional(&self.pool)
+        .await?;
         // update using Alert fields
         sqlx::query(
             r#"
@@ -177,7 +186,17 @@ impl PostgresDb {
         .bind(alert.last_seen)
         .execute(&self.pool)
         .await?;
-        
+        // If previous status existed and transitioned from active -> non-active, decrement Redis counter
+        if let Some(prev) = prev_status {
+            let was_active = matches!(prev.as_str(), "NEW" | "INVESTIGATING");
+            let now_active = matches!(alert.status.to_string().as_str(), "NEW" | "INVESTIGATING");
+            if was_active && !now_active {
+                if let Some(r) = redis {
+                    let _ = r.decrement_counter("siem:stats:active_alerts").await;
+                }
+            }
+        }
+
         Ok(())
     }
     

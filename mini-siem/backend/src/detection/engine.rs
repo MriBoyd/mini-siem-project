@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 
 use crate::types::{Log, Alert};
 use crate::db::{PostgresDb, RedisCache};
+use crate::db::cache::Cache;
 use crate::response::engine::ResponseEngine;
 use super::rules::{
     Rule, 
@@ -130,7 +131,7 @@ impl DetectionEngine {
                         existing.last_seen = alert.last_seen;
                         existing.events_count += alert.events_count;
 
-                        if let Err(e) = self.db.update_alert(existing).await {
+                        if let Err(e) = self.db.update_alert(existing, Some(self.redis.clone())).await {
                             error!("Failed to update alert in database: {}", e);
                         }
 
@@ -138,15 +139,27 @@ impl DetectionEngine {
                         if self.alert_tx.send(existing.clone()).is_err() {
                             warn!("Alert channel closed");
                         }
-                        // Publish updated aggregated stats
-                        match self.db.get_stats().await {
-                            Ok(stats_tuple) => {
-                                let stats = crate::types::DashboardStats::from(stats_tuple);
-                                if self.stats_tx.send(stats).is_err() {
-                                    warn!("Stats channel closed");
-                                }
-                            }
-                            Err(e) => error!("Failed to compute stats: {}", e),
+                        // For an updated alert we do not change total_alerts, but events_count changed.
+                        // Publish aggregated stats by reading Redis counters (fallback to DB and seed Redis)
+                        let tl: Option<u32> = self.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
+                        let ta: Option<u32> = self.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
+                        let aa: Option<u32> = self.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
+                        let ca: Option<u32> = self.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
+                        if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (tl, ta, aa, ca) {
+                            let stats = crate::types::DashboardStats {
+                                total_logs: tl as i64,
+                                total_alerts: ta as i64,
+                                active_alerts: aa as i64,
+                                critical_alerts: ca as i64,
+                            };
+                            let _ = self.stats_tx.send(stats);
+                        } else if let Ok((tl, ta, aa, ca)) = self.db.get_stats().await {
+                            let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
+                            let _ = self.stats_tx.send(stats.clone());
+                            let _ = self.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
+                            let _ = self.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
+                            let _ = self.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
+                            let _ = self.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
                         }
                     } else {
                         // Save new alert
@@ -161,15 +174,32 @@ impl DetectionEngine {
                         if self.alert_tx.send(alert.clone()).is_err() {
                             warn!("Alert channel closed");
                         }
-                        // Publish updated aggregated stats after creating a new alert
-                        match self.db.get_stats().await {
-                            Ok(stats_tuple) => {
-                                let stats = crate::types::DashboardStats::from(stats_tuple);
-                                if self.stats_tx.send(stats).is_err() {
-                                    warn!("Stats channel closed");
-                                }
-                            }
-                            Err(e) => error!("Failed to compute stats: {}", e),
+                        // Increment Redis counters for alerts
+                        let _ = self.redis.increment_counter("siem:stats:total_alerts", 86400).await;
+                        let _ = self.redis.increment_counter("siem:stats:active_alerts", 86400).await;
+                        if alert.severity == crate::types::AlertSeverity::Critical {
+                            let _ = self.redis.increment_counter("siem:stats:critical_alerts", 86400).await;
+                        }
+                        // Publish aggregated stats by reading Redis counters (fallback to DB and seed Redis)
+                        let tl: Option<u32> = self.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
+                        let ta: Option<u32> = self.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
+                        let aa: Option<u32> = self.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
+                        let ca: Option<u32> = self.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
+                        if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (tl, ta, aa, ca) {
+                            let stats = crate::types::DashboardStats {
+                                total_logs: tl as i64,
+                                total_alerts: ta as i64,
+                                active_alerts: aa as i64,
+                                critical_alerts: ca as i64,
+                            };
+                            let _ = self.stats_tx.send(stats);
+                        } else if let Ok((tl, ta, aa, ca)) = self.db.get_stats().await {
+                            let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
+                            let _ = self.stats_tx.send(stats.clone());
+                            let _ = self.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
+                            let _ = self.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
+                            let _ = self.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
+                            let _ = self.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
                         }
                     }
                 }
