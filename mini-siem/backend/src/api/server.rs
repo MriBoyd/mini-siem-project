@@ -46,6 +46,7 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
                 web::scope("/api/v1/auth")
                     .service(auth::register)
                     .service(auth::login)
+                    .service(auth::me)
                     .service(auth::refresh)
                     .service(auth::logout)
             )
@@ -57,7 +58,6 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
             .service(
                 web::scope("/api/v1")
                     .wrap(JwtAuth)
-                    .service(auth::me)
                     .service(alerts::list_alerts)
                     .service(dashboard::get_stats)
                     .service(rules::list_rules)

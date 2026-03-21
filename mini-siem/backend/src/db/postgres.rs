@@ -22,7 +22,7 @@ struct DbAlert {
     first_seen: DateTime<Utc>,
     last_seen: DateTime<Utc>,
     status: String,
-    events_count: i64,
+    events_count: i32,
 }
 
 impl DbAlert {
@@ -123,7 +123,7 @@ impl PostgresDb {
         .bind(alert.first_seen)
         .bind(alert.last_seen)
         .bind(alert.status.to_string())
-        .bind(alert.events_count as i64)
+        .bind(alert.events_count as i32)
         .bind(alert.first_seen) // using first_seen as created_at placeholder
         .bind(alert.last_seen)  // same for updated_at
         .execute(&self.pool)
@@ -173,7 +173,7 @@ impl PostgresDb {
         .bind(alert.id)
         .bind(alert.last_seen)
         .bind(alert.status.to_string())
-        .bind(alert.events_count as i64)
+        .bind(alert.events_count as i32)
         .bind(alert.last_seen)
         .execute(&self.pool)
         .await?;

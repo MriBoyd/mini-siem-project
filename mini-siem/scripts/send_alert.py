@@ -35,8 +35,8 @@ SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "DEBUG"]
 def make_log(i=0):
     now = datetime.now(timezone.utc).isoformat()
     src_ip = "198.51.100.%d" % (random.randint(1, 250))
-    event = random.choice(EVENT_TYPES)
-    severity = random.choice(SEVERITIES)
+    event = "login_failed"
+    severity = "CRITICAL"
     msg = f"Test alert {i} - {event} detected from {src_ip}"
 
     return {
