@@ -8,6 +8,7 @@ edition = "2021"
 actix-web = "4.5"
 actix-rt = "2.9"
 actix-cors = "0.6"
+actix-ws = "0.2"
 
 # async trait support
 async-trait = "0.1"

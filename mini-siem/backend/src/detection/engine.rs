@@ -1,4 +1,4 @@
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, broadcast};
 use tracing::{info, warn, error};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -15,7 +15,7 @@ use super::rules::{
 
 pub struct DetectionEngine {
     rules: Arc<RwLock<Vec<Box<dyn Rule + Send + Sync>>>>,
-    alert_tx: mpsc::Sender<Alert>,
+    alert_tx: broadcast::Sender<Alert>,
     redis: RedisCache,
     db: Arc<PostgresDb>,
     response_engine: Arc<ResponseEngine>,
@@ -23,7 +23,7 @@ pub struct DetectionEngine {
 
 impl DetectionEngine {
     pub async fn new(
-        alert_tx: mpsc::Sender<Alert>,
+        alert_tx: broadcast::Sender<Alert>,
         redis: RedisCache,
         db: Arc<PostgresDb>,
         response_engine: Arc<ResponseEngine>,
@@ -126,14 +126,13 @@ impl DetectionEngine {
                         // Update existing alert
                         existing.last_seen = alert.last_seen;
                         existing.events_count += alert.events_count;
-                        existing.events.extend(alert.events);
-                        
+
                         if let Err(e) = self.db.update_alert(existing).await {
                             error!("Failed to update alert in database: {}", e);
                         }
-                        
-                        // Send to channel
-                        if self.alert_tx.send(existing.clone()).await.is_err() {
+
+                        // Send updated alert to channel
+                        if self.alert_tx.send(existing.clone()).is_err() {
                             warn!("Alert channel closed");
                         }
                     } else {
@@ -141,12 +140,12 @@ impl DetectionEngine {
                         if let Err(e) = self.db.create_alert(&alert).await {
                             error!("Failed to save alert to database: {}", e);
                         }
-                        
+
                         // Trigger Response Engine (SOAR)
                         self.response_engine.handle_alert(&alert).await;
 
-                        // Send to channel
-                        if self.alert_tx.send(alert).await.is_err() {
+                        // Send new alert to channel
+                        if self.alert_tx.send(alert.clone()).is_err() {
                             warn!("Alert channel closed");
                         }
                     }

@@ -2,14 +2,14 @@ use actix_web::{web, App, HttpServer, middleware::Logger};
 use actix_cors::Cors;
 use tracing::info;
 use std::sync::Arc;
+use tokio::sync::{mpsc, broadcast};
 
 use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules};
 use crate::api::middleware::auth::JwtAuth;
 use crate::db::PostgresDb;
 use crate::db::redis::RedisCache;
 use crate::queue::kafka::KafkaQueue;
-use tokio::sync::mpsc;
-use crate::types::Log;
+use crate::types::{Log, Alert};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,6 +17,7 @@ pub struct AppState {
     pub redis: RedisCache,
     pub kafka: Arc<KafkaQueue>,
     pub log_tx: mpsc::Sender<Log>,
+    pub alert_tx: broadcast::Sender<Alert>,
 }
 
 pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
@@ -70,6 +71,7 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
                     .service(rules::update_rule)
                     .service(rules::delete_rule)
                     .service(rules::toggle_rule)
+                    .service(web::resource("/ws/alerts").route(web::get().to(alerts::ws_alerts)))
             )
     })
     .bind(bind_address)?

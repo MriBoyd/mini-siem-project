@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create channels
     let (log_tx, mut log_rx) = mpsc::channel::<types::Log>(10000);
-    let (alert_tx, mut alert_rx) = mpsc::channel::<types::Alert>(1000);
+    let (alert_tx, mut _alert_rx_old) = broadcast::channel::<types::Alert>(1000);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     
     // Start detection engine
@@ -88,10 +88,11 @@ async fn main() -> anyhow::Result<()> {
     
     // Start alert handler with Slack
     let mut alert_shutdown_rx = shutdown_tx.subscribe();
+    let mut alert_rx = alert_tx.subscribe();
     let alert_handle = task::spawn(async move {
         loop {
             tokio::select! {
-                Some(alert) = alert_rx.recv() => {
+                Ok(alert) = alert_rx.recv() => {
                     info!("📢 Alert: {} - {}", alert.severity, alert.description);
                     
                     // Send to Slack
@@ -159,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         redis: redis.clone(),
         kafka: kafka.clone(),
         log_tx: log_tx.clone(),
+        alert_tx: alert_tx.clone(),
     });
 
     info!("✅ Mini SIEM fully initialized");
