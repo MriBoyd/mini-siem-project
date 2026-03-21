@@ -25,7 +25,7 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-#[post("/api/v1/auth/register")]
+#[post("/register")]
 pub async fn register(
     state: web::Data<AppState>,
     req: web::Json<RegisterRequest>,
@@ -75,7 +75,7 @@ pub async fn register(
     }
 }
 
-#[post("/api/v1/auth/login")]
+#[post("/login")]
 pub async fn login(
     state: web::Data<AppState>,
     req: web::Json<LoginRequest>,
@@ -126,7 +126,7 @@ pub async fn login(
     })
 }
 
-#[post("/api/v1/auth/refresh")]
+#[post("/refresh")]
 pub async fn refresh(
     state: web::Data<AppState>,
     req: web::Json<RefreshRequest>,
@@ -180,7 +180,7 @@ pub async fn refresh(
     })
 }
 
-#[post("/api/v1/auth/logout")]
+#[post("/logout")]
 pub async fn logout(
     state: web::Data<AppState>,
     body: web::Json<RefreshRequest>,
@@ -193,7 +193,7 @@ pub async fn logout(
     HttpResponse::Ok().finish()
 }
 
-#[get("/api/v1/me")]
+#[get("/me")]
 pub async fn me(
     req: HttpRequest,
     state: web::Data<AppState>,

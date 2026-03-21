@@ -3,7 +3,7 @@ use actix_web::{get, web, HttpResponse, Responder, HttpRequest, HttpMessage};
 use crate::api::server::AppState;
 use crate::auth::jwt::Claims;
 
-#[get("/api/v1/alerts")]
+#[get("/alerts")]
 pub async fn list_alerts(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
     // RBAC: only users with 'analyst' or 'admin' roles may view alerts
     let exts = req.extensions();

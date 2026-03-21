@@ -1,5 +1,5 @@
 use sqlx::{postgres::PgPoolOptions, PgPool, query_as, query_scalar};
-use tracing::info;
+use tracing::{info, error};
 use anyhow::Result;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
@@ -8,6 +8,7 @@ use crate::types::{Alert, Log};
 use crate::db::models::user::User;
 use crate::db::models::rule::{DetectionRule, RuleCreate};
 use serde_json::Value;
+use crate::auth::password::hash_password;
 
 #[derive(sqlx::FromRow, Debug)]
 struct DbAlert {
@@ -68,10 +69,37 @@ impl PostgresDb {
         sqlx::migrate!("./src/db/migrations")
             .run(&pool)
             .await?;
-        
+
         info!("✅ Connected to PostgreSQL with pool size: {}", max_connections);
-        
-        Ok(Self { pool })
+
+        // Prepare DB wrapper
+        let db = Self { pool: pool.clone() };
+
+        // Optional: seed a mock admin user for development/testing.
+        // Controlled by the `SEED_MOCK_ADMIN` env var ("1" or "true").
+        let seed = std::env::var("SEED_MOCK_ADMIN").ok()
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        if seed {
+            let email = std::env::var("MOCK_ADMIN_EMAIL").unwrap_or_else(|_| "admin@example.com".to_string());
+            let password = std::env::var("MOCK_ADMIN_PASSWORD").unwrap_or_else(|_| "password123".to_string());
+            let role = "admin";
+
+            match db.get_user_by_email(&email).await {
+                Ok(Some(_)) => info!("Mock admin already exists: {}", email),
+                Ok(None) => match hash_password(&password) {
+                    Ok(hash) => match db.create_user(&email, &hash, role).await {
+                        Ok(_) => info!("Seeded mock admin user: {}", email),
+                        Err(e) => error!("Failed to create mock admin user: {}", e),
+                    },
+                    Err(e) => error!("Failed to hash mock admin password: {}", e),
+                },
+                Err(e) => error!("Error checking for existing mock admin: {}", e),
+            }
+        }
+
+        Ok(db)
     }
     
     pub async fn create_alert(&self, alert: &Alert) -> Result<()> {

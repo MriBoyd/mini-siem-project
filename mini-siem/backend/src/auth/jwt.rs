@@ -24,7 +24,10 @@ fn get_encoding_key() -> Result<&'static EncodingKey> {
 
     let private_key = env::var("JWT_PRIVATE_KEY")
         .context("JWT_PRIVATE_KEY not set")?;
-    
+
+    // Support PEMs stored with escaped newlines in env ("\n"). Replace so the PEM bytes are valid.
+    let private_key = private_key.replace("\\n", "\n");
+
     let key = EncodingKey::from_rsa_pem(private_key.as_bytes())
         .context("Failed to create encoding key")?;
     
@@ -38,7 +41,10 @@ fn get_decoding_key() -> Result<&'static DecodingKey> {
 
     let public_key = env::var("JWT_PUBLIC_KEY")
         .context("JWT_PUBLIC_KEY not set")?;
-    
+
+    // Support PEMs stored with escaped newlines in env ("\n").
+    let public_key = public_key.replace("\\n", "\n");
+
     let key = DecodingKey::from_rsa_pem(public_key.as_bytes())
         .context("Failed to create decoding key")?;
     

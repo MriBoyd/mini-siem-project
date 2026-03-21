@@ -49,6 +49,10 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
                     .service(auth::refresh)
                     .service(auth::logout)
             )
+            // Public logs ingest endpoints (register before the protected scope)
+            .service(logs::ingest_log)
+            .service(logs::ingest_batch)
+
             // Protected routes
             .service(
                 web::scope("/api/v1")
@@ -63,8 +67,6 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
                     .service(rules::delete_rule)
                     .service(rules::toggle_rule)
             )
-            .service(logs::ingest_log)
-            .service(logs::ingest_batch)
     })
     .bind(bind_address)?
     .run()
