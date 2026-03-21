@@ -3,7 +3,7 @@ use actix_web::{get, web, HttpResponse, Responder, HttpRequest, HttpMessage};
 use crate::api::server::AppState;
 use crate::auth::jwt::Claims;
 
-#[get("/api/v1/dashboard/stats")]
+#[get("/dashboard/stats")]
 pub async fn get_stats(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
     // RBAC: only users with 'analyst' or 'admin' roles may view dashboard stats
     let exts = req.extensions();

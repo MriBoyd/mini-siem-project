@@ -3,7 +3,7 @@ use uuid::Uuid;
 use crate::api::server::AppState;
 use crate::db::models::rule::{RuleCreate, RuleUpdate};
 
-#[get("/api/v1/rules")]
+#[get("/rules")]
 pub async fn list_rules(state: web::Data<AppState>) -> impl Responder {
     match state.db.get_all_rules().await {
         Ok(rules) => HttpResponse::Ok().json(rules),
@@ -11,7 +11,7 @@ pub async fn list_rules(state: web::Data<AppState>) -> impl Responder {
     }
 }
 
-#[post("/api/v1/rules")]
+#[post("/rules")]
 pub async fn create_rule(
     state: web::Data<AppState>,
     req: web::Json<RuleCreate>,
@@ -22,7 +22,7 @@ pub async fn create_rule(
     }
 }
 
-#[get("/api/v1/rules/{id}")]
+#[get("/rules/{id}")]
 pub async fn get_rule(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
@@ -35,7 +35,7 @@ pub async fn get_rule(
     }
 }
 
-#[put("/api/v1/rules/{id}")]
+#[put("/rules/{id}")]
 pub async fn update_rule(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
@@ -48,7 +48,7 @@ pub async fn update_rule(
     }
 }
 
-#[delete("/api/v1/rules/{id}")]
+#[delete("/rules/{id}")]
 pub async fn delete_rule(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
@@ -60,7 +60,7 @@ pub async fn delete_rule(
     }
 }
 
-#[post("/api/v1/rules/{id}/toggle")]
+#[post("/rules/{id}/toggle")]
 pub async fn toggle_rule(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
