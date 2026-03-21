@@ -4,6 +4,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { DashboardStats, Alert } from '@/types';
+import useAlertsWS from '@/hooks/use-alerts-ws';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +30,9 @@ export default function DashboardPage() {
       return response.data;
     },
   });
+
+  // subscribe to realtime alerts via WebSocket
+  useAlertsWS();
 
   if (!user && !statsLoading) {
     // In a real app, we'd handle redirect in middleware or useAuth

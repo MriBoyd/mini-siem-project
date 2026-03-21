@@ -18,6 +18,7 @@ pub struct AppState {
     pub kafka: Arc<KafkaQueue>,
     pub log_tx: mpsc::Sender<Log>,
     pub alert_tx: broadcast::Sender<Alert>,
+    pub stats_tx: broadcast::Sender<crate::types::DashboardStats>,
 }
 
 pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {

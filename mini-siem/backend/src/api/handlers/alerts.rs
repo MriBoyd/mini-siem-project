@@ -52,6 +52,7 @@ pub async fn ws_alerts(
 
     let (res, mut session, mut msg_stream) = actix_ws::handle(&req, stream)?;
     let mut alert_rx = state.alert_tx.subscribe();
+    let mut stats_rx = state.stats_tx.subscribe();
 
     info!("🔌 WebSocket connected for alerts: user={}", claims.sub);
 
@@ -63,10 +64,12 @@ pub async fn ws_alerts(
                 result = alert_rx.recv() => {
                     match result {
                         Ok(alert) => {
-                            let msg = match serde_json::to_string(&alert) {
+                            // send typed alert message
+                            let payload = serde_json::json!({"type":"alert","data":alert});
+                            let msg = match serde_json::to_string(&payload) {
                                 Ok(m) => m,
                                 Err(e) => {
-                                    error!("Failed to serialize alert: {}", e);
+                                    error!("Failed to serialize alert payload: {}", e);
                                     continue;
                                 }
                             };
@@ -76,6 +79,30 @@ pub async fn ws_alerts(
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!("WS client lagged behind {} alerts", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
+                }
+                // Listen for stats updates from the broadcast channel
+                result_stats = stats_rx.recv() => {
+                    match result_stats {
+                        Ok(stats) => {
+                            let payload = serde_json::json!({"type":"stats","data":stats});
+                            let msg = match serde_json::to_string(&payload) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    error!("Failed to serialize stats payload: {}", e);
+                                    continue;
+                                }
+                            };
+                            if session.text(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("WS client lagged behind {} stats messages", n);
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             break;

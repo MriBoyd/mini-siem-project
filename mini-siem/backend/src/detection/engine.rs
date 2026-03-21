@@ -1,4 +1,4 @@
-use tokio::sync::{mpsc, broadcast};
+use tokio::sync::broadcast;
 use tracing::{info, warn, error};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -16,6 +16,7 @@ use super::rules::{
 pub struct DetectionEngine {
     rules: Arc<RwLock<Vec<Box<dyn Rule + Send + Sync>>>>,
     alert_tx: broadcast::Sender<Alert>,
+    stats_tx: broadcast::Sender<crate::types::DashboardStats>,
     redis: RedisCache,
     db: Arc<PostgresDb>,
     response_engine: Arc<ResponseEngine>,
@@ -24,6 +25,7 @@ pub struct DetectionEngine {
 impl DetectionEngine {
     pub async fn new(
         alert_tx: broadcast::Sender<Alert>,
+        stats_tx: broadcast::Sender<crate::types::DashboardStats>,
         redis: RedisCache,
         db: Arc<PostgresDb>,
         response_engine: Arc<ResponseEngine>,
@@ -31,6 +33,7 @@ impl DetectionEngine {
         let engine = Self {
             rules: Arc::new(RwLock::new(Vec::new())),
             alert_tx,
+            stats_tx,
             redis,
             db,
             response_engine,
@@ -135,6 +138,16 @@ impl DetectionEngine {
                         if self.alert_tx.send(existing.clone()).is_err() {
                             warn!("Alert channel closed");
                         }
+                        // Publish updated aggregated stats
+                        match self.db.get_stats().await {
+                            Ok(stats_tuple) => {
+                                let stats = crate::types::DashboardStats::from(stats_tuple);
+                                if self.stats_tx.send(stats).is_err() {
+                                    warn!("Stats channel closed");
+                                }
+                            }
+                            Err(e) => error!("Failed to compute stats: {}", e),
+                        }
                     } else {
                         // Save new alert
                         if let Err(e) = self.db.create_alert(&alert).await {
@@ -147,6 +160,16 @@ impl DetectionEngine {
                         // Send new alert to channel
                         if self.alert_tx.send(alert.clone()).is_err() {
                             warn!("Alert channel closed");
+                        }
+                        // Publish updated aggregated stats after creating a new alert
+                        match self.db.get_stats().await {
+                            Ok(stats_tuple) => {
+                                let stats = crate::types::DashboardStats::from(stats_tuple);
+                                if self.stats_tx.send(stats).is_err() {
+                                    warn!("Stats channel closed");
+                                }
+                            }
+                            Err(e) => error!("Failed to compute stats: {}", e),
                         }
                     }
                 }

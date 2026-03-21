@@ -60,10 +60,12 @@ async fn main() -> anyhow::Result<()> {
     // Create channels
     let (log_tx, mut log_rx) = mpsc::channel::<types::Log>(10000);
     let (alert_tx, mut _alert_rx_old) = broadcast::channel::<types::Alert>(1000);
+    // Broadcast channel for aggregated dashboard stats
+    let (stats_tx, mut _stats_rx_old) = broadcast::channel::<types::DashboardStats>(100);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     
     // Start detection engine
-    let detection_engine = Arc::new(detection::engine::DetectionEngine::new(alert_tx.clone(), redis.clone(), db.clone(), response_engine.clone()).await);
+    let detection_engine = Arc::new(detection::engine::DetectionEngine::new(alert_tx.clone(), stats_tx.clone(), redis.clone(), db.clone(), response_engine.clone()).await);
     let mut detect_shutdown_rx = shutdown_tx.subscribe();
     let detection_engine_clone = detection_engine.clone();
     let detection_handle = task::spawn(async move {
@@ -161,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         kafka: kafka.clone(),
         log_tx: log_tx.clone(),
         alert_tx: alert_tx.clone(),
+        stats_tx: stats_tx.clone(),
     });
 
     info!("✅ Mini SIEM fully initialized");

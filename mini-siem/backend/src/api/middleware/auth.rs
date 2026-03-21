@@ -42,23 +42,45 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
+        // Try Authorization header first
         let auth_header = req.headers().get("Authorization");
+
+        let mut token_opt: Option<String> = None;
 
         if let Some(auth_str) = auth_header.and_then(|h| h.to_str().ok()) {
             if auth_str.starts_with("Bearer ") {
-                let token = &auth_str[7..];
-                match decode_jwt(token) {
-                    Ok(token_data) => {
-                        req.extensions_mut().insert(token_data.claims);
-                        let fut = self.service.call(req);
-                        return Box::pin(async move {
-                            let res = fut.await?;
-                            Ok(res)
-                        });
+                token_opt = Some(auth_str[7..].to_string());
+            }
+        }
+
+        // Fallback: allow `token` query param (useful for browser WebSocket connections)
+        if token_opt.is_none() {
+            if let Some(q) = req.uri().query() {
+                for pair in q.split('&') {
+                    if let Some(pos) = pair.find('=') {
+                        let (k, v) = pair.split_at(pos);
+                        if k == "token" {
+                            // v starts with '='
+                            token_opt = Some(v[1..].to_string());
+                            break;
+                        }
                     }
-                    Err(_) => {
-                        return Box::pin(ready(Err(actix_web::error::ErrorUnauthorized("Invalid token"))));
-                    }
+                }
+            }
+        }
+
+        if let Some(token) = token_opt {
+            match decode_jwt(&token) {
+                Ok(token_data) => {
+                    req.extensions_mut().insert(token_data.claims);
+                    let fut = self.service.call(req);
+                    return Box::pin(async move {
+                        let res = fut.await?;
+                        Ok(res)
+                    });
+                }
+                Err(_) => {
+                    return Box::pin(ready(Err(actix_web::error::ErrorUnauthorized("Invalid token"))));
                 }
             }
         }
