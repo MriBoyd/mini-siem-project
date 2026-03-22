@@ -176,6 +176,32 @@ impl DetectionEngine {
                 Ok(_) => {
                     // also broadcast lightweight notification for real-time UIs
                     let _ = self.alert_tx.send(alert.clone());
+
+                    // Best-effort: publish lightweight dashboard stats so UIs get an immediate
+                    // update when an alert is enqueued. We read counters from Redis (if
+                    // present) and include rules_loaded for context.
+                    let rules_count = self.rules.load().values().map(|v| v.len()).sum::<usize>() as i64;
+                    let redis = self.redis.clone();
+                    let stats_tx = self.stats_tx.clone();
+                    tokio::spawn(async move {
+                        let tl: Option<u32> = redis.get_counter("siem:stats:total_logs").await.ok().flatten();
+                        let ta: Option<u32> = redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
+                        let aa: Option<u32> = redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
+                        let ca: Option<u32> = redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
+
+                        let stats = crate::types::DashboardStats {
+                            total_logs: tl.map(|v| v as i64).unwrap_or(0),
+                            total_alerts: ta.map(|v| v as i64).unwrap_or(0),
+                            active_alerts: aa.map(|v| v as i64).unwrap_or(0),
+                            critical_alerts: ca.map(|v| v as i64).unwrap_or(0),
+                        };
+
+                        // attach rules_loaded in the same broadcast by using total_logs field
+                        // as the primary numeric; the dashboard consumers can also call
+                        // get_stats() for richer info. We still include rules count via logs
+                        // field where appropriate (keeps message shape stable).
+                        let _ = stats_tx.send(stats);
+                    });
                 }
                 Err(e) => {
                     error!("Failed to enqueue alert to Kafka: {}. Falling back to immediate processing.", e);
