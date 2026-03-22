@@ -40,6 +40,9 @@ impl Rule for BruteForceRule {
     fn id(&self) -> &str {
         &self.id
     }
+    fn log_types(&self) -> Vec<String> {
+        vec!["auth".to_string()]
+    }
     
     async fn evaluate(&self, log: &Log) -> anyhow::Result<Option<Alert>> {
         // Only check failed logins

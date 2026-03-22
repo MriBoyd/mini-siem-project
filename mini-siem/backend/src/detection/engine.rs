@@ -8,7 +8,6 @@ use futures_util::stream::{self, StreamExt};
 use crate::types::{Log, Alert};
 use crate::queue::kafka::KafkaQueue;
 use crate::db::{PostgresDb, RedisCache};
-use crate::db::cache::Cache;
 use crate::response::engine::ResponseEngine;
 use super::rules::{
     Rule, 
@@ -18,7 +17,7 @@ use super::rules::{
 };
 
     pub struct DetectionEngine {
-    // Map of rule_type -> list of rules (lock-free reads)
+    // Map of log_type/tag -> list of rules (lock-free reads)
     rules: ArcSwap<HashMap<String, Vec<Arc<dyn Rule + Send + Sync>>>>,
     alert_tx: broadcast::Sender<Alert>,
     stats_tx: broadcast::Sender<crate::types::DashboardStats>,
@@ -69,7 +68,10 @@ impl DetectionEngine {
                         dr.window_seconds.unwrap_or(300) as i64,
                         Arc::new(self.redis.clone()),
                     ));
-                    new_rules.entry("brute_force".to_string()).or_default().push(rule);
+                    // index by rule-provided log types
+                    for lt in rule.log_types() {
+                        new_rules.entry(lt).or_default().push(rule.clone());
+                    }
                 }
                 "port_scan" => {
                     let rule = Arc::new(PortScanRule::new(
@@ -79,7 +81,9 @@ impl DetectionEngine {
                         dr.window_seconds.unwrap_or(60) as i64,
                         Arc::new(self.redis.clone()),
                     ));
-                    new_rules.entry("port_scan".to_string()).or_default().push(rule);
+                    for lt in rule.log_types() {
+                        new_rules.entry(lt).or_default().push(rule.clone());
+                    }
                 }
                 "malware" => {
                     let rule = Arc::new(MalwareDetectionRule::new(
@@ -87,7 +91,9 @@ impl DetectionEngine {
                         dr.name,
                         Arc::new(self.redis.clone()),
                     ));
-                    new_rules.entry("malware".to_string()).or_default().push(rule);
+                    for lt in rule.log_types() {
+                        new_rules.entry(lt).or_default().push(rule.clone());
+                    }
                 }
                 _ => warn!("Unknown rule type: {}", dr.rule_type),
             }
@@ -106,32 +112,31 @@ impl DetectionEngine {
         
         // Check each rule concurrently
         {
-            // Determine relevant rule types for this log to avoid evaluating all rules
+            // Determine relevant rule types/tags for this log to avoid evaluating all rules.
             let rules_map = self.rules.load();
             let mut candidate_rules: Vec<Arc<dyn Rule + Send + Sync>> = Vec::new();
 
-            // Simple heuristics mapping logs to rule types
+            // Infer tags from the log (small, fast heuristics). Rules declare which tags they
+            // handle via `log_types()` and were indexed by those tags at reload time.
+            let mut tags: Vec<String> = Vec::new();
             if log.is_failed_login() || log.event_type.contains("auth") || log.event_type.contains("login") {
-                if let Some(v) = rules_map.get("brute_force") {
-                    candidate_rules.extend(v.iter().cloned());
-                }
+                tags.push("auth".to_string());
             }
-
-            // network-related logs
             if log.event_type.contains("network") || log.event_type.contains("port") || log.service.as_deref().unwrap_or("").contains("ssh") {
-                if let Some(v) = rules_map.get("port_scan") {
+                tags.push("network".to_string());
+            }
+            if log.message.contains("http") || log.message.contains('.') || log.message.contains("powershell") || log.message.contains("wget") {
+                tags.push("malware".to_string());
+            }
+
+            // Collect candidate rules from the index
+            for tag in tags.iter() {
+                if let Some(v) = rules_map.get(tag) {
                     candidate_rules.extend(v.iter().cloned());
                 }
             }
 
-            // suspicious content -> malware rules
-            if log.message.contains('.') || log.message.contains("http") || log.message.contains("http") {
-                if let Some(v) = rules_map.get("malware") {
-                    candidate_rules.extend(v.iter().cloned());
-                }
-            }
-
-            // Fallback: if no candidates found, run malware rules as a lightweight default
+            // Fallback: if no candidates found, run rules indexed under "malware" (lightweight) if present
             if candidate_rules.is_empty() {
                 if let Some(v) = rules_map.get("malware") {
                     candidate_rules.extend(v.iter().cloned());
