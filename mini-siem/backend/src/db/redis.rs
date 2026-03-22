@@ -52,6 +52,8 @@ impl Cache for RedisCache {
         if let Some(exp) = expiry_seconds {
             let _: () = conn.expire(key, exp as i64).await?;
         }
+        // Update L1 cache so reads are consistent
+        self.l1.insert(key.to_string(), value);
         Ok(())
     }
 
@@ -243,5 +245,15 @@ impl RedisCache {
         self.l1.insert(keys[2].to_string(), ca as u64);
 
         Ok((ta as u32, aa as u32, ca as u32))
+    }
+
+    // Increment a counter by `delta` atomically and set expiry. Returns the new value.
+    pub async fn incr_by(&self, key: &str, delta: u64, expiry_seconds: u64) -> Result<u32> {
+        let mut conn = self.conn.clone();
+        let new: i64 = conn.incr(key, delta as i64).await?;
+        let _: () = conn.expire(key, expiry_seconds as i64).await?;
+        let new_u = if new < 0 { 0 } else { new as u32 };
+        self.l1.insert(key.to_string(), new as u64);
+        Ok(new_u)
     }
 }

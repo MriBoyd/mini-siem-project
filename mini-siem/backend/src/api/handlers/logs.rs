@@ -81,7 +81,7 @@ pub async fn ingest_log(
     
     // Update Redis counter for total logs and publish aggregated stats (best-effort)
     if let Ok(_) = state.redis.increment_counter("siem:stats:total_logs", 86400).await {
-        // Try to read counters from Redis
+        // Try to read counters from Redis (L1 cache will be used if available)
         let total_logs: Option<u32> = state.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
         let total_alerts: Option<u32> = state.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
         let active_alerts: Option<u32> = state.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
@@ -176,9 +176,9 @@ pub async fn ingest_batch(
     }
     
     info!("📦 Accepted batch of {} logs", responses.len());
-    // Update Redis counter for total logs by incrementing per log and publish aggregated stats (best-effort)
-    for _ in 0..responses.len() {
-        let _ = state.redis.increment_counter("siem:stats:total_logs", 86400).await;
+    // Update Redis counter for total logs in one operation and publish aggregated stats (best-effort)
+    if responses.len() > 0 {
+        let _ = state.redis.incr_by("siem:stats:total_logs", responses.len() as u64, 86400).await;
     }
 
     // Try to read counters from Redis
