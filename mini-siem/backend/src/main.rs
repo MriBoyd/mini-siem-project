@@ -177,6 +177,16 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Start dedicated alert worker to process alerts from Kafka asynchronously
+    // Create DB batcher channel and spawn the DB batcher
+    let (db_tx, db_rx) = mpsc::channel::<types::Alert>(1000);
+    let _db_batcher_handle = alerting::db_batcher::spawn_db_batcher(
+        db.clone(),
+        db_rx,
+        shutdown_tx.subscribe(),
+        100,
+        1000,
+    );
+
     let alert_worker_handle = alerting::worker::spawn_alert_worker(
         kafka.clone(),
         db.clone(),
@@ -184,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
         response_engine.clone(),
         alert_tx.clone(),
         stats_tx.clone(),
+        db_tx.clone(),
         shutdown_tx.subscribe(),
     ).await;
 

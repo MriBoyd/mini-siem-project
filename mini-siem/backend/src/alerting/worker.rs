@@ -19,6 +19,7 @@ pub async fn spawn_alert_worker(
     response_engine: Arc<ResponseEngine>,
     alert_tx: broadcast::Sender<Alert>,
     stats_tx: broadcast::Sender<crate::types::DashboardStats>,
+    db_tx: tokio::sync::mpsc::Sender<Alert>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> tokio::task::JoinHandle<()> {
     // internal channel from Kafka consumer to worker
@@ -42,31 +43,34 @@ pub async fn spawn_alert_worker(
             tokio::select! {
                 Some(alert) = rx.recv() => {
                     info!("⬇️  Processing alert {} from Kafka", alert.id);
-
-                    // Persist to DB (try update existing open alert by IP first)
-                    match db.get_open_alerts_by_ip(&alert.source_ip).await {
-                        Ok(mut existing_alerts) => {
-                            if let Some(existing) = existing_alerts.first_mut() {
-                                existing.last_seen = alert.last_seen;
-                                existing.events_count += alert.events_count;
-                                if let Err(e) = db.update_alert(existing, Some(redis.clone())).await {
-                                    error!("Failed to update alert in DB: {}", e);
+                    // Enqueue to DB batcher via the internal channel. If the channel is full,
+                    // fallback to immediate DB write to avoid data loss.
+                    if let Err(e) = db_tx.try_send(alert.clone()) {
+                        error!("DB batcher channel full, falling back to immediate DB write: {}", e);
+                        match db.get_open_alerts_by_ip(&alert.source_ip).await {
+                            Ok(mut existing_alerts) => {
+                                if let Some(existing) = existing_alerts.first_mut() {
+                                    existing.last_seen = alert.last_seen;
+                                    existing.events_count += alert.events_count;
+                                    if let Err(e) = db.update_alert(existing, Some(redis.clone())).await {
+                                        error!("Failed to update alert in DB: {}", e);
+                                    }
+                                    let _ = alert_tx.send(existing.clone());
+                                } else {
+                                    if let Err(e) = db.create_alert(&alert).await {
+                                        error!("Failed to save alert to DB: {}", e);
+                                    }
+                                    let _ = alert_tx.send(alert.clone());
                                 }
-                                let _ = alert_tx.send(existing.clone());
-                            } else {
+                            }
+                            Err(e) => {
+                                error!("Failed to query existing alerts: {}", e);
+                                // fallback to create
                                 if let Err(e) = db.create_alert(&alert).await {
-                                    error!("Failed to save alert to DB: {}", e);
+                                    error!("Failed to save alert to DB (fallback): {}", e);
                                 }
                                 let _ = alert_tx.send(alert.clone());
                             }
-                        }
-                        Err(e) => {
-                            error!("Failed to query existing alerts: {}", e);
-                            // fallback to create
-                            if let Err(e) = db.create_alert(&alert).await {
-                                error!("Failed to save alert to DB (fallback): {}", e);
-                            }
-                            let _ = alert_tx.send(alert.clone());
                         }
                     }
 

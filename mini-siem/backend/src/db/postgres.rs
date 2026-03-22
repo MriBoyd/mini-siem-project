@@ -233,6 +233,114 @@ impl PostgresDb {
         Ok(alerts)
     }
 
+    pub async fn get_open_alerts_by_ips(&self, source_ips: &[String]) -> Result<Vec<Alert>> {
+        if source_ips.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows: Vec<DbAlert> = query_as(
+            r#"SELECT id, rule_id, rule_name, severity, description, source_ip, events, first_seen, last_seen, status, events_count
+               FROM alerts
+               WHERE source_ip = ANY($1) AND status IN ('NEW', 'INVESTIGATING')
+               ORDER BY last_seen DESC
+            "#,
+        )
+        .bind(source_ips)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut alerts = Vec::with_capacity(rows.len());
+        for row in rows {
+            alerts.push(row.into_alert()?);
+        }
+        Ok(alerts)
+    }
+
+    pub async fn create_alerts_batch(&self, alerts: &[Alert]) -> Result<()> {
+        if alerts.is_empty() { return Ok(()); }
+
+        // Build dynamic multi-row insert
+        let mut idx = 1usize;
+        let mut values_placeholders: Vec<String> = Vec::new();
+
+        for _ in alerts.iter() {
+            let placeholders = (0..13).map(|_| {
+                let p = format!("${}", idx);
+                idx += 1;
+                p
+            }).collect::<Vec<_>>().join(",");
+            values_placeholders.push(format!("({})", placeholders));
+        }
+
+        let sql = format!(
+            "INSERT INTO alerts (id, rule_id, rule_name, severity, description, source_ip, events, first_seen, last_seen, status, events_count, created_at, updated_at) VALUES {}",
+            values_placeholders.join(",")
+        );
+
+        let mut q = sqlx::query(&sql);
+        for a in alerts.iter() {
+            q = q.bind(a.id)
+                .bind(&a.rule_id)
+                .bind(&a.rule_name)
+                .bind(a.severity.to_string())
+                .bind(&a.description)
+                .bind(&a.source_ip)
+                .bind(serde_json::to_value(&a.events)?)
+                .bind(a.first_seen)
+                .bind(a.last_seen)
+                .bind(a.status.to_string())
+                .bind(a.events_count as i32)
+                .bind(a.first_seen)
+                .bind(a.last_seen);
+        }
+
+        q.execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Upsert a batch of alerts: insert new alerts or update existing ones in one statement.
+    pub async fn upsert_alerts_batch(&self, alerts: &[Alert]) -> Result<()> {
+        if alerts.is_empty() { return Ok(()); }
+
+        // Build dynamic multi-row insert with ON CONFLICT DO UPDATE
+        let mut idx = 1usize;
+        let mut values_placeholders: Vec<String> = Vec::new();
+
+        for _ in alerts.iter() {
+            let placeholders = (0..13).map(|_| {
+                let p = format!("${}", idx);
+                idx += 1;
+                p
+            }).collect::<Vec<_>>().join(",");
+            values_placeholders.push(format!("({})", placeholders));
+        }
+
+        let sql = format!(
+            "INSERT INTO alerts (id, rule_id, rule_name, severity, description, source_ip, events, first_seen, last_seen, status, events_count, created_at, updated_at) VALUES {} ON CONFLICT (id) DO UPDATE SET last_seen = EXCLUDED.last_seen, status = EXCLUDED.status, events_count = EXCLUDED.events_count, events = EXCLUDED.events, updated_at = EXCLUDED.updated_at",
+            values_placeholders.join(",")
+        );
+
+        let mut q = sqlx::query(&sql);
+        for a in alerts.iter() {
+            q = q.bind(a.id)
+                .bind(&a.rule_id)
+                .bind(&a.rule_name)
+                .bind(a.severity.to_string())
+                .bind(&a.description)
+                .bind(&a.source_ip)
+                .bind(serde_json::to_value(&a.events)?)
+                .bind(a.first_seen)
+                .bind(a.last_seen)
+                .bind(a.status.to_string())
+                .bind(a.events_count as i32)
+                .bind(a.first_seen)
+                .bind(a.last_seen);
+        }
+
+        q.execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn get_recent_alerts(&self, limit: i64) -> Result<Vec<Alert>> {
         let rows: Vec<DbAlert> = query_as(
             r#"SELECT id, rule_id, rule_name, severity, description, source_ip, events, first_seen, last_seen, status, events_count
