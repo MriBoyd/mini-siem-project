@@ -3,10 +3,14 @@ use tracing::info;
 use anyhow::Result;
 use async_trait::async_trait;
 use super::cache::Cache;
+use dashmap::DashMap;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct RedisCache {
     conn: ConnectionManager,
+    // Lightweight in-memory L1 cache for hot-path counters
+    l1: Arc<DashMap<String, u64>>,
 }
 
 #[async_trait]
@@ -15,19 +19,30 @@ impl Cache for RedisCache {
     async fn increment_counter(&self, key: &str, expiry_seconds: u64) -> Result<u32> {
         let mut conn = self.conn.clone();
         let count: u32 = conn.incr(key, 1).await?;
-        
+
         // Set expiry on first increment
         if count == 1 {
             let _: () = conn.expire(key, expiry_seconds as i64).await?;
         }
-        
+
+        // Update L1 cache
+        self.l1.insert(key.to_string(), count as u64);
+
         Ok(count)
     }
     
     // Get counter value
     async fn get_counter(&self, key: &str) -> Result<Option<u32>> {
+        // Check L1 cache first
+        if let Some(v) = self.l1.get(key) {
+            return Ok(Some(*v.value() as u32));
+        }
+
         let mut conn = self.conn.clone();
         let count: Option<u32> = conn.get(key).await?;
+        if let Some(c) = count {
+            self.l1.insert(key.to_string(), c as u64);
+        }
         Ok(count)
     }
 
@@ -45,6 +60,8 @@ impl Cache for RedisCache {
         // DECR returns value which may be negative; clamp at 0
         let val: i64 = conn.decr(key, 1).await?;
         let v = if val < 0 { 0 } else { val as u32 };
+        // Update L1 cache
+        self.l1.insert(key.to_string(), v as u64);
         Ok(v)
     }
     
@@ -173,7 +190,58 @@ impl RedisCache {
         let conn = ConnectionManager::new(client).await?;
         
         info!("✅ Connected to Redis");
-        
-        Ok(Self { conn })
+        Ok(Self { conn, l1: Arc::new(DashMap::new()) })
+    }
+
+    // Atomic increment for alert-related counters using Lua script to minimize roundtrips.
+    // Increments `siem:stats:total_alerts` and `siem:stats:active_alerts` always, and
+    // `siem:stats:critical_alerts` when `is_critical` is true. Returns tuple (ta, aa, ca).
+    pub async fn inc_alert_counters(&self, is_critical: bool, expiry_seconds: u64) -> Result<(u32,u32,u32)> {
+        let mut conn = self.conn.clone();
+
+        let script = r#"
+        local ta_key = KEYS[1]
+        local aa_key = KEYS[2]
+        local ca_key = KEYS[3]
+        local is_crit = tonumber(ARGV[1])
+        local exp = tonumber(ARGV[2])
+
+        local ta = redis.call('INCR', ta_key)
+        redis.call('EXPIRE', ta_key, exp)
+        local aa = redis.call('INCR', aa_key)
+        redis.call('EXPIRE', aa_key, exp)
+        local ca = 0
+        if is_crit == 1 then
+            ca = redis.call('INCR', ca_key)
+            redis.call('EXPIRE', ca_key, exp)
+        else
+            ca = redis.call('GET', ca_key) or 0
+        end
+        return {ta, aa, ca}
+        "#;
+
+        let keys = vec!["siem:stats:total_alerts", "siem:stats:active_alerts", "siem:stats:critical_alerts"];
+
+        // Invoke script with numeric args to avoid temporary &str lifetimes
+        let res: Vec<i64> = redis::Script::new(script)
+            .key(keys[0])
+            .key(keys[1])
+            .key(keys[2])
+            .arg(if is_critical { 1 } else { 0 })
+            .arg(expiry_seconds)
+            .invoke_async(&mut conn)
+            .await?;
+
+        // Ensure we have three values
+        let ta = *res.get(0).unwrap_or(&0);
+        let aa = *res.get(1).unwrap_or(&0);
+        let ca = *res.get(2).unwrap_or(&0);
+
+        // Update L1 cache
+        self.l1.insert(keys[0].to_string(), ta as u64);
+        self.l1.insert(keys[1].to_string(), aa as u64);
+        self.l1.insert(keys[2].to_string(), ca as u64);
+
+        Ok((ta as u32, aa as u32, ca as u32))
     }
 }

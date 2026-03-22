@@ -8,6 +8,7 @@ use futures_util::stream::{self, StreamExt};
 use crate::types::{Log, Alert};
 use crate::queue::kafka::KafkaQueue;
 use crate::db::{PostgresDb, RedisCache};
+use crate::db::cache::Cache;
 use crate::response::engine::ResponseEngine;
 use super::rules::{
     Rule, 
@@ -180,7 +181,7 @@ impl DetectionEngine {
                     // Best-effort: publish lightweight dashboard stats so UIs get an immediate
                     // update when an alert is enqueued. We read counters from Redis (if
                     // present) and include rules_loaded for context.
-                    let rules_count = self.rules.load().values().map(|v| v.len()).sum::<usize>() as i64;
+                    let _rules_count = self.rules.load().values().map(|v| v.len()).sum::<usize>() as i64;
                     let redis = self.redis.clone();
                     let stats_tx = self.stats_tx.clone();
                     tokio::spawn(async move {

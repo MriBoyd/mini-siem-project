@@ -77,33 +77,27 @@ pub async fn spawn_alert_worker(
                         re.handle_alert(&alert_clone).await;
                     });
 
-                    // Update Redis counters
-                    let _ = redis.increment_counter("siem:stats:total_alerts", 86400).await;
-                    let _ = redis.increment_counter("siem:stats:active_alerts", 86400).await;
-                    if alert.severity == crate::types::AlertSeverity::Critical {
-                        let _ = redis.increment_counter("siem:stats:critical_alerts", 86400).await;
-                    }
-
-                    // Recompute stats and broadcast (best-effort)
-                    let tl: Option<u32> = redis.get_counter("siem:stats:total_logs").await.ok().flatten();
-                    let ta: Option<u32> = redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
-                    let aa: Option<u32> = redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
-                    let ca: Option<u32> = redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
-                    if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (tl, ta, aa, ca) {
-                        let stats = crate::types::DashboardStats {
-                            total_logs: tl as i64,
-                            total_alerts: ta as i64,
-                            active_alerts: aa as i64,
-                            critical_alerts: ca as i64,
-                        };
-                        let _ = stats_tx.send(stats);
-                    } else if let Ok((tl, ta, aa, ca)) = db.get_stats().await {
-                        let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
-                        let _ = stats_tx.send(stats.clone());
-                        let _ = redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
-                        let _ = redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
-                        let _ = redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
-                        let _ = redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
+                    // Atomically increment alert counters and fetch new values in one call
+                    let is_crit = alert.severity == crate::types::AlertSeverity::Critical;
+                    if let Ok((ta, aa, ca)) = redis.inc_alert_counters(is_crit, 86400).await {
+                        // Try to read total_logs from L1 or DB; best-effort
+                        let tl: Option<u32> = redis.get_counter("siem:stats:total_logs").await.ok().flatten();
+                        if let Some(tl) = tl {
+                            let stats = crate::types::DashboardStats {
+                                total_logs: tl as i64,
+                                total_alerts: ta as i64,
+                                active_alerts: aa as i64,
+                                critical_alerts: ca as i64,
+                            };
+                            let _ = stats_tx.send(stats);
+                        } else if let Ok((otl, ota, oaa, oca)) = db.get_stats().await {
+                            let stats = crate::types::DashboardStats::from((otl, ota, oaa, oca));
+                            let _ = stats_tx.send(stats.clone());
+                            let _ = redis.set_counter("siem:stats:total_logs", otl as u64, Some(86400)).await;
+                            let _ = redis.set_counter("siem:stats:total_alerts", ota as u64, Some(86400)).await;
+                            let _ = redis.set_counter("siem:stats:active_alerts", oaa as u64, Some(86400)).await;
+                            let _ = redis.set_counter("siem:stats:critical_alerts", oca as u64, Some(86400)).await;
+                        }
                     }
                 }
                 _ = shutdown_rx.recv() => {
