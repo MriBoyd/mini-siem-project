@@ -4,6 +4,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use futures_util::stream::{self, StreamExt};
+use smallvec::SmallVec;
 
 use crate::types::{Log, Alert};
 use crate::queue::kafka::KafkaQueue;
@@ -115,7 +116,7 @@ impl DetectionEngine {
         {
             // Determine relevant rule types/tags for this log to avoid evaluating all rules.
             let rules_map = self.rules.load();
-            let mut candidate_rules: Vec<Arc<dyn Rule + Send + Sync>> = Vec::new();
+            let mut candidate_rules: SmallVec<[Arc<dyn Rule + Send + Sync>; 8]> = SmallVec::new();
 
             // Infer tags from the log (small, fast heuristics). Rules declare which tags they
             // handle via `log_types()` and were indexed by those tags at reload time.
