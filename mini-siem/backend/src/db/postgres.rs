@@ -5,7 +5,7 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::types::{Alert, Log};
-use crate::db::redis::RedisCache;
+    use crate::db::redis::RedisCache;
 use crate::db::models::user::User;
 use crate::db::models::rule::{DetectionRule, RuleCreate};
 use crate::db::cache::Cache;

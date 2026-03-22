@@ -1,7 +1,8 @@
 use tokio::sync::broadcast;
 use tracing::{info, warn, error};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use arc_swap::ArcSwap;
+use futures_util::stream::{self, StreamExt};
 
 use crate::types::{Log, Alert};
 use crate::db::{PostgresDb, RedisCache};
@@ -14,8 +15,8 @@ use super::rules::{
     malware::MalwareDetectionRule,
 };
 
-pub struct DetectionEngine {
-    rules: Arc<RwLock<Vec<Box<dyn Rule + Send + Sync>>>>,
+    pub struct DetectionEngine {
+    rules: ArcSwap<Vec<Arc<dyn Rule + Send + Sync>>>,
     alert_tx: broadcast::Sender<Alert>,
     stats_tx: broadcast::Sender<crate::types::DashboardStats>,
     redis: RedisCache,
@@ -32,7 +33,7 @@ impl DetectionEngine {
         response_engine: Arc<ResponseEngine>,
     ) -> Self {
         let engine = Self {
-            rules: Arc::new(RwLock::new(Vec::new())),
+            rules: ArcSwap::from_pointee(Vec::new()),
             alert_tx,
             stats_tx,
             redis,
@@ -50,12 +51,12 @@ impl DetectionEngine {
 
     pub async fn reload_rules(&self) -> anyhow::Result<()> {
         let db_rules = self.db.get_enabled_rules().await?;
-        let mut new_rules: Vec<Box<dyn Rule + Send + Sync>> = Vec::new();
+        let mut new_rules: Vec<Arc<dyn Rule + Send + Sync>> = Vec::new();
 
         for dr in db_rules {
             match dr.rule_type.as_str() {
                 "brute_force" => {
-                    new_rules.push(Box::new(BruteForceRule::new(
+                    new_rules.push(Arc::new(BruteForceRule::new(
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(5) as u32,
@@ -64,7 +65,7 @@ impl DetectionEngine {
                     )));
                 }
                 "port_scan" => {
-                    new_rules.push(Box::new(PortScanRule::new(
+                    new_rules.push(Arc::new(PortScanRule::new(
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(20) as u32,
@@ -73,7 +74,7 @@ impl DetectionEngine {
                     )));
                 }
                 "malware" => {
-                    new_rules.push(Box::new(MalwareDetectionRule::new(
+                    new_rules.push(Arc::new(MalwareDetectionRule::new(
                         dr.id.to_string(),
                         dr.name,
                         Arc::new(self.redis.clone()),
@@ -84,8 +85,7 @@ impl DetectionEngine {
         }
 
         let count = new_rules.len();
-        let mut rules_lock = self.rules.write().await;
-        *rules_lock = new_rules;
+        self.rules.store(Arc::new(new_rules));
         
         info!("🧠 Detection engine reloaded with {} rules", count);
         Ok(())
@@ -96,25 +96,29 @@ impl DetectionEngine {
         
         // Check each rule concurrently
         {
-            let rules = self.rules.read().await;
-            
+            let rules = self.rules.load();
+
             let mut eval_futures = Vec::with_capacity(rules.len());
             for rule in rules.iter() {
-                eval_futures.push(rule.evaluate(&log));
+                let name = rule.name().to_string();
+                let rule_arc = rule.clone();
+                let log_clone = log.clone();
+                eval_futures.push(async move { (name, rule_arc.evaluate(&log_clone).await) });
             }
 
-            let results = futures_util::future::join_all(eval_futures).await;
+            let results = stream::iter(eval_futures)
+                .buffer_unordered(10)
+                .collect::<Vec<_>>()
+                .await;
 
-            for (idx, result) in results.into_iter().enumerate() {
+            for (rule_name, result) in results.into_iter() {
                 match result {
                     Ok(Some(alert)) => {
-                        let rule_name = rules[idx].name();
                         warn!("🚨 Rule triggered: {} - {}", rule_name, alert.description);
                         alerts_to_process.push(alert);
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        let rule_name = rules[idx].name();
                         error!("Rule evaluation error ({}): {}", rule_name, e);
                     }
                 }
@@ -213,7 +217,7 @@ impl DetectionEngine {
     #[allow(dead_code)]
     pub async fn get_stats(&self) -> serde_json::Value {
         // No lock needed for redis anymore as it's cloneable and internal implementation handles it
-        let rules_count = self.rules.read().await.len();
+        let rules_count = self.rules.load().len();
         
         // Get some Redis stats
         let mut stats = serde_json::Map::new();

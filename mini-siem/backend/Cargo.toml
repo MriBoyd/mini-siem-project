@@ -61,6 +61,7 @@ base64 = "0.21"
 futures-util = "0.3"
 
 tokio-stream = "0.1"
+arc-swap = "1.6"
 
 # metrics and monitoring
 prometheus = { version = "0.13", features = ["process"] }
