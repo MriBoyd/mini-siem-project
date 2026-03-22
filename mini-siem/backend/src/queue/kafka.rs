@@ -134,11 +134,28 @@ impl KafkaQueue {
                                         cnt.store(0, Ordering::Relaxed);
                                     }
                                 }
-                                Err(TrySendError::Full(_)) => {
-                                    if let Some(cnt) = full_counter.as_ref() {
-                                        cnt.fetch_add(1, Ordering::Relaxed);
+                                Err(TrySendError::Full(mut l)) => {
+                                    // Hybrid backpressure: try a short blocking send before dropping.
+                                    // Wait up to 50ms for the downstream to accept the message.
+                                    use tokio::time::{timeout, Duration};
+                                    match timeout(Duration::from_millis(50), tx.send(l)).await {
+                                        Ok(Ok(())) => {
+                                            if let Some(cnt) = full_counter.as_ref() {
+                                                cnt.store(0, Ordering::Relaxed);
+                                            }
+                                        }
+                                        Ok(Err(_send_err)) => {
+                                            tracing::warn!("log channel closed while sending, stopping consumer");
+                                            break;
+                                        }
+                                        Err(_) => {
+                                            // Timed out — downstream still busy; increment counter and drop
+                                            if let Some(cnt) = full_counter.as_ref() {
+                                                cnt.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                            tracing::warn!("log channel full after wait, dropping message");
+                                        }
                                     }
-                                    tracing::warn!("log channel full, dropping message");
                                 }
                                 Err(TrySendError::Closed(_)) => {
                                     tracing::warn!("log channel closed, stopping consumer");
@@ -172,11 +189,26 @@ impl KafkaQueue {
                                         cnt.store(0, Ordering::Relaxed);
                                     }
                                 }
-                                Err(TrySendError::Full(_)) => {
-                                    if let Some(cnt) = full_counter.as_ref() {
-                                        cnt.fetch_add(1, Ordering::Relaxed);
+                                Err(TrySendError::Full(mut a)) => {
+                                    // Try short blocking send before dropping alerts
+                                    use tokio::time::{timeout, Duration};
+                                    match timeout(Duration::from_millis(50), tx.send(a)).await {
+                                        Ok(Ok(())) => {
+                                            if let Some(cnt) = full_counter.as_ref() {
+                                                cnt.store(0, Ordering::Relaxed);
+                                            }
+                                        }
+                                        Ok(Err(_)) => {
+                                            tracing::warn!("alert channel closed while sending, stopping consumer");
+                                            break;
+                                        }
+                                        Err(_) => {
+                                            if let Some(cnt) = full_counter.as_ref() {
+                                                cnt.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                            tracing::warn!("alert channel full after wait, dropping message");
+                                        }
                                     }
-                                    tracing::warn!("alert channel full, dropping message");
                                 }
                                 Err(TrySendError::Closed(_)) => {
                                     tracing::warn!("alert channel closed, stopping consumer");
