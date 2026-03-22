@@ -39,6 +39,9 @@ async fn main() -> anyhow::Result<()> {
     
     // Initialize Redis
     let redis = RedisCache::new(&redis_url).await?;
+    // Start L1 cache maintenance: evict entries older than 5 minutes every 60s,
+    // refresh hot keys older than 30s, keep top 100 hot keys refreshed
+    let _l1_maint = redis.start_l1_maintenance(60, 300, 30, 100);
     
     // Initialize Kafka
     let kafka: KafkaQueue = KafkaQueue::new(&kafka_brokers).await?;
