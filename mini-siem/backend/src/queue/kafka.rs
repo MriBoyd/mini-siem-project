@@ -118,7 +118,7 @@ impl KafkaQueue {
 
     /// Consume from Kafka and forward logs into the provided `tx`.
     /// `full_counter` is incremented when the channel is full (monitoring aid).
-    pub async fn consume_logs(&self, tx: mpsc::Sender<Log>, full_counter: Option<Arc<AtomicUsize>>) -> Result<()> {
+    pub async fn consume_logs(&self, tx: mpsc::Sender<Log>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64) -> Result<()> {
         let mut stream = self.consumer.stream();
 
         while let Some(message) = stream.next().await {
@@ -134,26 +134,101 @@ impl KafkaQueue {
                                         cnt.store(0, Ordering::Relaxed);
                                     }
                                 }
-                                Err(TrySendError::Full(mut l)) => {
-                                    // Hybrid backpressure: try a short blocking send before dropping.
-                                    // Wait up to 50ms for the downstream to accept the message.
-                                    use tokio::time::{timeout, Duration};
-                                    match timeout(Duration::from_millis(50), tx.send(l)).await {
-                                        Ok(Ok(())) => {
-                                            if let Some(cnt) = full_counter.as_ref() {
-                                                cnt.store(0, Ordering::Relaxed);
+                                Err(TrySendError::Full(l)) => {
+                                    if pause_on_full {
+                                        // Try to pause consumer and block until there's space.
+                                        match self.consumer.assignment() {
+                                            Ok(assignment) => {
+                                                if let Err(e) = self.consumer.pause(&assignment) {
+                                                    tracing::warn!("failed to pause consumer: {}", e);
+                                                }
+                                                // Use timeout controlled by caller; 0 means wait indefinitely
+                                                if pause_timeout_ms == 0 {
+                                                    match tx.send(l).await {
+                                                        Ok(()) => {
+                                                            if let Err(e) = self.consumer.resume(&assignment) {
+                                                                tracing::warn!("failed to resume consumer: {}", e);
+                                                            }
+                                                            if let Some(cnt) = full_counter.as_ref() {
+                                                                cnt.store(0, Ordering::Relaxed);
+                                                            }
+                                                        }
+                                                        Err(_) => {
+                                                            tracing::warn!("log channel closed while sending, stopping consumer");
+                                                            break;
+                                                        }
+                                                    }
+                                                } else {
+                                                    use tokio::time::{timeout, Duration};
+                                                    match timeout(Duration::from_millis(pause_timeout_ms), tx.send(l)).await {
+                                                        Ok(Ok(())) => {
+                                                            if let Err(e) = self.consumer.resume(&assignment) {
+                                                                tracing::warn!("failed to resume consumer: {}", e);
+                                                            }
+                                                            if let Some(cnt) = full_counter.as_ref() {
+                                                                cnt.store(0, Ordering::Relaxed);
+                                                            }
+                                                        }
+                                                        Ok(Err(_)) => {
+                                                            tracing::warn!("log channel closed while sending, stopping consumer");
+                                                            break;
+                                                        }
+                                                        Err(_) => {
+                                                            // timed out
+                                                            if let Err(e) = self.consumer.resume(&assignment) {
+                                                                tracing::warn!("failed to resume consumer: {}", e);
+                                                            }
+                                                            if let Some(cnt) = full_counter.as_ref() {
+                                                                cnt.fetch_add(1, Ordering::Relaxed);
+                                                            }
+                                                            tracing::warn!("log channel full after pause timeout, dropping message");
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("couldn't get consumer assignment: {}", e);
+                                                // fallback to short wait
+                                                use tokio::time::{timeout, Duration};
+                                                let wait_ms = if pause_timeout_ms == 0 { 50 } else { std::cmp::min(50, pause_timeout_ms) };
+                                                match timeout(Duration::from_millis(wait_ms), tx.send(l)).await {
+                                                    Ok(Ok(())) => {
+                                                        if let Some(cnt) = full_counter.as_ref() {
+                                                            cnt.store(0, Ordering::Relaxed);
+                                                        }
+                                                    }
+                                                    Ok(Err(_)) => {
+                                                        tracing::warn!("log channel closed while sending, stopping consumer");
+                                                        break;
+                                                    }
+                                                    Err(_) => {
+                                                        if let Some(cnt) = full_counter.as_ref() {
+                                                            cnt.fetch_add(1, Ordering::Relaxed);
+                                                        }
+                                                        tracing::warn!("log channel full after wait, dropping message");
+                                                    }
+                                                }
                                             }
                                         }
-                                        Ok(Err(_send_err)) => {
-                                            tracing::warn!("log channel closed while sending, stopping consumer");
-                                            break;
-                                        }
-                                        Err(_) => {
-                                            // Timed out — downstream still busy; increment counter and drop
-                                            if let Some(cnt) = full_counter.as_ref() {
-                                                cnt.fetch_add(1, Ordering::Relaxed);
+                                    } else {
+                                        // fallback: short wait then drop
+                                        use tokio::time::{timeout, Duration};
+                                        match timeout(Duration::from_millis(50), tx.send(l)).await {
+                                            Ok(Ok(())) => {
+                                                if let Some(cnt) = full_counter.as_ref() {
+                                                    cnt.store(0, Ordering::Relaxed);
+                                                }
                                             }
-                                            tracing::warn!("log channel full after wait, dropping message");
+                                            Ok(Err(_)) => {
+                                                tracing::warn!("log channel closed while sending, stopping consumer");
+                                                break;
+                                            }
+                                            Err(_) => {
+                                                if let Some(cnt) = full_counter.as_ref() {
+                                                    cnt.fetch_add(1, Ordering::Relaxed);
+                                                }
+                                                tracing::warn!("log channel full after wait, dropping message");
+                                            }
                                         }
                                     }
                                 }
@@ -175,7 +250,7 @@ impl KafkaQueue {
     }
 
     /// Consume alerts from Kafka and forward into the provided `tx` for processing.
-    pub async fn consume_alerts(&self, tx: mpsc::Sender<crate::types::Alert>, full_counter: Option<Arc<AtomicUsize>>) -> Result<()> {
+    pub async fn consume_alerts(&self, tx: mpsc::Sender<crate::types::Alert>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64) -> Result<()> {
         let mut stream = self.consumer.stream();
 
         while let Some(message) = stream.next().await {
@@ -189,24 +264,98 @@ impl KafkaQueue {
                                         cnt.store(0, Ordering::Relaxed);
                                     }
                                 }
-                                Err(TrySendError::Full(mut a)) => {
-                                    // Try short blocking send before dropping alerts
-                                    use tokio::time::{timeout, Duration};
-                                    match timeout(Duration::from_millis(50), tx.send(a)).await {
-                                        Ok(Ok(())) => {
-                                            if let Some(cnt) = full_counter.as_ref() {
-                                                cnt.store(0, Ordering::Relaxed);
+                                Err(TrySendError::Full(a)) => {
+                                    if pause_on_full {
+                                        match self.consumer.assignment() {
+                                            Ok(assignment) => {
+                                                if let Err(e) = self.consumer.pause(&assignment) {
+                                                    tracing::warn!("failed to pause consumer: {}", e);
+                                                }
+
+                                                if pause_timeout_ms == 0 {
+                                                    match tx.send(a).await {
+                                                        Ok(()) => {
+                                                            if let Err(e) = self.consumer.resume(&assignment) {
+                                                                tracing::warn!("failed to resume consumer: {}", e);
+                                                            }
+                                                            if let Some(cnt) = full_counter.as_ref() {
+                                                                cnt.store(0, Ordering::Relaxed);
+                                                            }
+                                                        }
+                                                        Err(_) => {
+                                                            tracing::warn!("alert channel closed while sending, stopping consumer");
+                                                            break;
+                                                        }
+                                                    }
+                                                } else {
+                                                    use tokio::time::{timeout, Duration};
+                                                    match timeout(Duration::from_millis(pause_timeout_ms), tx.send(a)).await {
+                                                        Ok(Ok(())) => {
+                                                            if let Err(e) = self.consumer.resume(&assignment) {
+                                                                tracing::warn!("failed to resume consumer: {}", e);
+                                                            }
+                                                            if let Some(cnt) = full_counter.as_ref() {
+                                                                cnt.store(0, Ordering::Relaxed);
+                                                            }
+                                                        }
+                                                        Ok(Err(_)) => {
+                                                            tracing::warn!("alert channel closed while sending, stopping consumer");
+                                                            break;
+                                                        }
+                                                        Err(_) => {
+                                                            if let Err(e) = self.consumer.resume(&assignment) {
+                                                                tracing::warn!("failed to resume consumer: {}", e);
+                                                            }
+                                                            if let Some(cnt) = full_counter.as_ref() {
+                                                                cnt.fetch_add(1, Ordering::Relaxed);
+                                                            }
+                                                            tracing::warn!("alert channel full after pause timeout, dropping message");
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("couldn't get consumer assignment: {}", e);
+                                                use tokio::time::{timeout, Duration};
+                                                let wait_ms = if pause_timeout_ms == 0 { 50 } else { std::cmp::min(50, pause_timeout_ms) };
+                                                match timeout(Duration::from_millis(wait_ms), tx.send(a)).await {
+                                                    Ok(Ok(())) => {
+                                                        if let Some(cnt) = full_counter.as_ref() {
+                                                            cnt.store(0, Ordering::Relaxed);
+                                                        }
+                                                    }
+                                                    Ok(Err(_)) => {
+                                                        tracing::warn!("alert channel closed while sending, stopping consumer");
+                                                        break;
+                                                    }
+                                                    Err(_) => {
+                                                        if let Some(cnt) = full_counter.as_ref() {
+                                                            cnt.fetch_add(1, Ordering::Relaxed);
+                                                        }
+                                                        tracing::warn!("alert channel full after wait, dropping message");
+                                                    }
+                                                }
                                             }
                                         }
-                                        Ok(Err(_)) => {
-                                            tracing::warn!("alert channel closed while sending, stopping consumer");
-                                            break;
-                                        }
-                                        Err(_) => {
-                                            if let Some(cnt) = full_counter.as_ref() {
-                                                cnt.fetch_add(1, Ordering::Relaxed);
+                                    } else {
+                                        use tokio::time::{timeout, Duration};
+                                        let wait_ms = if pause_timeout_ms == 0 { 50 } else { std::cmp::min(50, pause_timeout_ms) };
+                                        match timeout(Duration::from_millis(wait_ms), tx.send(a)).await {
+                                            Ok(Ok(())) => {
+                                                if let Some(cnt) = full_counter.as_ref() {
+                                                    cnt.store(0, Ordering::Relaxed);
+                                                }
                                             }
-                                            tracing::warn!("alert channel full after wait, dropping message");
+                                            Ok(Err(_)) => {
+                                                tracing::warn!("alert channel closed while sending, stopping consumer");
+                                                break;
+                                            }
+                                            Err(_) => {
+                                                if let Some(cnt) = full_counter.as_ref() {
+                                                    cnt.fetch_add(1, Ordering::Relaxed);
+                                                }
+                                                tracing::warn!("alert channel full after wait, dropping message");
+                                            }
                                         }
                                     }
                                 }

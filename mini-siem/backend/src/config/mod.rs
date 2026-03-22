@@ -9,6 +9,8 @@ pub struct Config {
     pub slack_webhook: Option<String>,
     pub api_bind: String,
     pub metrics_bind: String,
+    pub kafka_pause_on_full: bool,
+    pub kafka_pause_timeout_ms: u64,
 }
 
 impl Config {
@@ -21,6 +23,12 @@ impl Config {
         let slack_webhook = env::var("SLACK_WEBHOOK").ok();
         let api_bind = env::var("API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
         let metrics_bind = env::var("METRICS_BIND").unwrap_or_else(|_| "127.0.0.1:9898".to_string());
+        let kafka_pause_on_full = env::var("KAFKA_PAUSE_ON_FULL").ok()
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(true);
+        let kafka_pause_timeout_ms = env::var("KAFKA_PAUSE_TIMEOUT_MS").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5000);
 
         Ok(Self {
             database_url,
@@ -29,6 +37,8 @@ impl Config {
             slack_webhook,
             api_bind,
             metrics_bind,
+            kafka_pause_on_full,
+            kafka_pause_timeout_ms,
         })
     }
 }

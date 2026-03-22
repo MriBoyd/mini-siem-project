@@ -21,6 +21,8 @@ pub async fn spawn_alert_worker(
     stats_tx: broadcast::Sender<crate::types::DashboardStats>,
     db_tx: tokio::sync::mpsc::Sender<Alert>,
     mut shutdown_rx: broadcast::Receiver<()>,
+    pause_on_full: bool,
+    pause_timeout_ms: u64,
 ) -> tokio::task::JoinHandle<()> {
     // internal channel from Kafka consumer to worker
     let (tx, mut rx) = mpsc::channel::<Alert>(1000);
@@ -29,7 +31,7 @@ pub async fn spawn_alert_worker(
 
     // Spawn the Kafka consumer task
     let consumer_handle = tokio::spawn(async move {
-        let res = kafka_consumer.consume_alerts(tx, Some(full_counter.clone())).await;
+        let res = kafka_consumer.consume_alerts(tx, Some(full_counter.clone()), pause_on_full, pause_timeout_ms).await;
         if let Err(e) = res {
             error!("Kafka alert consumer error: {}", e);
         }

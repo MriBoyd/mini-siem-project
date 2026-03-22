@@ -8,6 +8,7 @@ use metrics::{gauge, register_gauge};
 
 use mini_siem::db::PostgresDb;
 use mini_siem::db::redis::RedisCache;
+use mini_siem::db::cache::Cache;
 use mini_siem::queue::kafka::KafkaQueue;
 use mini_siem::response::engine::ResponseEngine;
 use mini_siem::response::actions::WebhookAction;
@@ -154,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
         let counter = log_channel_full_counter.clone();
         task::spawn(async move {
             tokio::select! {
-                res = kafka_consumer.consume_logs(log_tx_clone, Some(counter)) => {
+                res = kafka_consumer.consume_logs(log_tx_clone, Some(counter), cfg.kafka_pause_on_full, cfg.kafka_pause_timeout_ms) => {
                     if let Err(e) = res {
                         error!("Kafka consumer error: {}", e);
                     }
@@ -196,6 +197,8 @@ async fn main() -> anyhow::Result<()> {
         stats_tx.clone(),
         db_tx.clone(),
         shutdown_tx.subscribe(),
+        cfg.kafka_pause_on_full,
+        cfg.kafka_pause_timeout_ms,
     ).await;
 
     // Start periodic Redis -> Postgres stats sync (reads Redis counters and persists them periodically)
