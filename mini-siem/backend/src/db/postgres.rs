@@ -380,6 +380,29 @@ impl PostgresDb {
         Ok((total_logs, total_alerts, active_alerts, critical_alerts))
     }
 
+    /// Persist aggregated counters into a singleton `system_stats` row.
+    pub async fn save_stats(&self, total_logs: i64, total_alerts: i64, active_alerts: i64, critical_alerts: i64) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO system_stats (id, total_logs, total_alerts, active_alerts, critical_alerts, updated_at)
+            VALUES (1, $1, $2, $3, $4, NOW())
+            ON CONFLICT (id) DO UPDATE
+            SET total_logs = EXCLUDED.total_logs,
+                total_alerts = EXCLUDED.total_alerts,
+                active_alerts = EXCLUDED.active_alerts,
+                critical_alerts = EXCLUDED.critical_alerts,
+                updated_at = NOW();
+            "#,
+        )
+        .bind(total_logs)
+        .bind(total_alerts)
+        .bind(active_alerts)
+        .bind(critical_alerts)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn create_user(&self, email: &str, password_hash: &str, role: &str) -> Result<User> {
         let user = sqlx::query_as::<_, User>(
             "INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) RETURNING id, email, password_hash, role, created_at, updated_at",

@@ -198,6 +198,25 @@ async fn main() -> anyhow::Result<()> {
         shutdown_tx.subscribe(),
     ).await;
 
+    // Start periodic Redis -> Postgres stats sync (reads Redis counters and persists them periodically)
+    let db_clone_for_stats = db.clone();
+    let redis_clone_for_stats = redis.clone();
+    let _stats_sync_handle = task::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            // best-effort: read counters from Redis
+            let total_logs = redis_clone_for_stats.get_counter("siem:stats:total_logs").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+            let total_alerts = redis_clone_for_stats.get_counter("siem:stats:total_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+            let active_alerts = redis_clone_for_stats.get_counter("siem:stats:active_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+            let critical_alerts = redis_clone_for_stats.get_counter("siem:stats:critical_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+
+            if let Err(e) = db_clone_for_stats.save_stats(total_logs, total_alerts, active_alerts, critical_alerts).await {
+                error!("Failed to persist aggregated stats to DB: {}", e);
+            }
+        }
+    });
+
     info!("✅ Mini SIEM fully initialized");
     info!("📡 API: http://{}", cfg.api_bind);
     info!("📊 Kafka: {}", kafka_brokers);
