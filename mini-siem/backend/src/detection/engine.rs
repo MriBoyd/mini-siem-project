@@ -2,6 +2,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn, error};
 use std::sync::Arc;
 use arc_swap::ArcSwap;
+use std::collections::HashMap;
 use futures_util::stream::{self, StreamExt};
 
 use crate::types::{Log, Alert};
@@ -17,7 +18,8 @@ use super::rules::{
 };
 
     pub struct DetectionEngine {
-    rules: ArcSwap<Vec<Arc<dyn Rule + Send + Sync>>>,
+    // Map of rule_type -> list of rules (lock-free reads)
+    rules: ArcSwap<HashMap<String, Vec<Arc<dyn Rule + Send + Sync>>>>,
     alert_tx: broadcast::Sender<Alert>,
     stats_tx: broadcast::Sender<crate::types::DashboardStats>,
     redis: RedisCache,
@@ -36,7 +38,7 @@ impl DetectionEngine {
         kafka: Arc<KafkaQueue>,
     ) -> Self {
         let engine = Self {
-            rules: ArcSwap::from_pointee(Vec::new()),
+            rules: ArcSwap::from_pointee(HashMap::new()),
             alert_tx,
             stats_tx,
             redis,
@@ -55,40 +57,44 @@ impl DetectionEngine {
 
     pub async fn reload_rules(&self) -> anyhow::Result<()> {
         let db_rules = self.db.get_enabled_rules().await?;
-        let mut new_rules: Vec<Arc<dyn Rule + Send + Sync>> = Vec::new();
+        let mut new_rules: HashMap<String, Vec<Arc<dyn Rule + Send + Sync>>> = HashMap::new();
 
         for dr in db_rules {
             match dr.rule_type.as_str() {
                 "brute_force" => {
-                    new_rules.push(Arc::new(BruteForceRule::new(
+                    let rule = Arc::new(BruteForceRule::new(
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(5) as u32,
                         dr.window_seconds.unwrap_or(300) as i64,
                         Arc::new(self.redis.clone()),
-                    )));
+                    ));
+                    new_rules.entry("brute_force".to_string()).or_default().push(rule);
                 }
                 "port_scan" => {
-                    new_rules.push(Arc::new(PortScanRule::new(
+                    let rule = Arc::new(PortScanRule::new(
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(20) as u32,
                         dr.window_seconds.unwrap_or(60) as i64,
                         Arc::new(self.redis.clone()),
-                    )));
+                    ));
+                    new_rules.entry("port_scan".to_string()).or_default().push(rule);
                 }
                 "malware" => {
-                    new_rules.push(Arc::new(MalwareDetectionRule::new(
+                    let rule = Arc::new(MalwareDetectionRule::new(
                         dr.id.to_string(),
                         dr.name,
                         Arc::new(self.redis.clone()),
-                    )));
+                    ));
+                    new_rules.entry("malware".to_string()).or_default().push(rule);
                 }
                 _ => warn!("Unknown rule type: {}", dr.rule_type),
             }
         }
 
-        let count = new_rules.len();
+        // count total rules
+        let count: usize = new_rules.values().map(|v| v.len()).sum();
         self.rules.store(Arc::new(new_rules));
         
         info!("🧠 Detection engine reloaded with {} rules", count);
@@ -100,10 +106,40 @@ impl DetectionEngine {
         
         // Check each rule concurrently
         {
-            let rules = self.rules.load();
+            // Determine relevant rule types for this log to avoid evaluating all rules
+            let rules_map = self.rules.load();
+            let mut candidate_rules: Vec<Arc<dyn Rule + Send + Sync>> = Vec::new();
 
-            let mut eval_futures = Vec::with_capacity(rules.len());
-            for rule in rules.iter() {
+            // Simple heuristics mapping logs to rule types
+            if log.is_failed_login() || log.event_type.contains("auth") || log.event_type.contains("login") {
+                if let Some(v) = rules_map.get("brute_force") {
+                    candidate_rules.extend(v.iter().cloned());
+                }
+            }
+
+            // network-related logs
+            if log.event_type.contains("network") || log.event_type.contains("port") || log.service.as_deref().unwrap_or("").contains("ssh") {
+                if let Some(v) = rules_map.get("port_scan") {
+                    candidate_rules.extend(v.iter().cloned());
+                }
+            }
+
+            // suspicious content -> malware rules
+            if log.message.contains('.') || log.message.contains("http") || log.message.contains("http") {
+                if let Some(v) = rules_map.get("malware") {
+                    candidate_rules.extend(v.iter().cloned());
+                }
+            }
+
+            // Fallback: if no candidates found, run malware rules as a lightweight default
+            if candidate_rules.is_empty() {
+                if let Some(v) = rules_map.get("malware") {
+                    candidate_rules.extend(v.iter().cloned());
+                }
+            }
+
+            let mut eval_futures = Vec::with_capacity(candidate_rules.len());
+            for rule in candidate_rules.iter() {
                 let name = rule.name().to_string();
                 let rule_arc = rule.clone();
                 let log_clone = log.clone();
