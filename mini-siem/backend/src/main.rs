@@ -65,7 +65,14 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     
     // Start detection engine
-    let detection_engine = Arc::new(detection::engine::DetectionEngine::new(alert_tx.clone(), stats_tx.clone(), redis.clone(), db.clone(), response_engine.clone()).await);
+    let detection_engine = Arc::new(detection::engine::DetectionEngine::new(
+        alert_tx.clone(),
+        stats_tx.clone(),
+        redis.clone(),
+        db.clone(),
+        response_engine.clone(),
+        kafka.clone(),
+    ).await);
     let mut detect_shutdown_rx = shutdown_tx.subscribe();
     let detection_engine_clone = detection_engine.clone();
     let detection_handle = task::spawn(async move {
@@ -166,6 +173,17 @@ async fn main() -> anyhow::Result<()> {
         stats_tx: stats_tx.clone(),
     });
 
+    // Start dedicated alert worker to process alerts from Kafka asynchronously
+    let alert_worker_handle = alerting::worker::spawn_alert_worker(
+        kafka.clone(),
+        db.clone(),
+        redis.clone(),
+        response_engine.clone(),
+        alert_tx.clone(),
+        stats_tx.clone(),
+        shutdown_tx.subscribe(),
+    ).await;
+
     info!("✅ Mini SIEM fully initialized");
     info!("📡 API: http://{}", cfg.api_bind);
     info!("📊 Kafka: {}", kafka_brokers);
@@ -199,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = detection_handle.await;
     let _ = alert_handle.await;
     let _ = kafka_handle.await;
+    let _ = alert_worker_handle.await;
 
     info!("👋 Goodbye!");
     

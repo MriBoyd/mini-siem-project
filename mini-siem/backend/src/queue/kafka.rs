@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::error::TrySendError;
 
 const DEFAULT_TOPIC: &str = "siem-logs";
+const ALERTS_TOPIC: &str = "siem-alerts";
 
 pub struct KafkaQueue {
     producer: FutureProducer,
@@ -101,6 +102,20 @@ impl KafkaQueue {
         }
     }
 
+    pub async fn send_alert(&self, alert: &crate::types::Alert) -> Result<()> {
+        let payload = serde_json::to_string(alert)?;
+
+        let key = alert.id.to_string();
+        let record = FutureRecord::to(ALERTS_TOPIC)
+            .payload(&payload)
+            .key(&key);
+
+        match self.producer.send(record, Timeout::After(Duration::from_secs(5))).await {
+            Ok((_partition, _offset)) => Ok(()),
+            Err((e, _)) => Err(anyhow::anyhow!("Kafka send error: {:?}", e)),
+        }
+    }
+
     /// Consume from Kafka and forward logs into the provided `tx`.
     /// `full_counter` is incremented when the channel is full (monitoring aid).
     pub async fn consume_logs(&self, tx: mpsc::Sender<Log>, full_counter: Option<Arc<AtomicUsize>>) -> Result<()> {
@@ -127,6 +142,44 @@ impl KafkaQueue {
                                 }
                                 Err(TrySendError::Closed(_)) => {
                                     tracing::warn!("log channel closed, stopping consumer");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("kafka consumer error: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Consume alerts from Kafka and forward into the provided `tx` for processing.
+    pub async fn consume_alerts(&self, tx: mpsc::Sender<crate::types::Alert>, full_counter: Option<Arc<AtomicUsize>>) -> Result<()> {
+        let mut stream = self.consumer.stream();
+
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(msg) => {
+                    if let Some(Ok(payload)) = msg.payload_view::<str>() {
+                        if let Ok(alert) = serde_json::from_str::<crate::types::Alert>(payload) {
+                            match tx.try_send(alert) {
+                                Ok(_) => {
+                                    if let Some(cnt) = full_counter.as_ref() {
+                                        cnt.store(0, Ordering::Relaxed);
+                                    }
+                                }
+                                Err(TrySendError::Full(_)) => {
+                                    if let Some(cnt) = full_counter.as_ref() {
+                                        cnt.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    tracing::warn!("alert channel full, dropping message");
+                                }
+                                Err(TrySendError::Closed(_)) => {
+                                    tracing::warn!("alert channel closed, stopping consumer");
                                     break;
                                 }
                             }

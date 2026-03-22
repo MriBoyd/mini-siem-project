@@ -5,6 +5,7 @@ use arc_swap::ArcSwap;
 use futures_util::stream::{self, StreamExt};
 
 use crate::types::{Log, Alert};
+use crate::queue::kafka::KafkaQueue;
 use crate::db::{PostgresDb, RedisCache};
 use crate::db::cache::Cache;
 use crate::response::engine::ResponseEngine;
@@ -22,6 +23,7 @@ use super::rules::{
     redis: RedisCache,
     db: Arc<PostgresDb>,
     response_engine: Arc<ResponseEngine>,
+    kafka: Arc<KafkaQueue>,
 }
 
 impl DetectionEngine {
@@ -31,6 +33,7 @@ impl DetectionEngine {
         redis: RedisCache,
         db: Arc<PostgresDb>,
         response_engine: Arc<ResponseEngine>,
+        kafka: Arc<KafkaQueue>,
     ) -> Self {
         let engine = Self {
             rules: ArcSwap::from_pointee(Vec::new()),
@@ -39,6 +42,7 @@ impl DetectionEngine {
             redis,
             db,
             response_engine,
+            kafka,
         };
         
         // Initial rules load
@@ -125,90 +129,23 @@ impl DetectionEngine {
             }
         }
         
-        // Handle alerts
+        // Handle alerts: enqueue to Kafka for async processing by workers.
         for alert in alerts_to_process {
-            // Check for existing open alert from same IP
-            match self.db.get_open_alerts_by_ip(&alert.source_ip).await {
-                Ok(mut existing_alerts) => {
-                    if let Some(existing) = existing_alerts.first_mut() {
-                        // Update existing alert
-                        existing.last_seen = alert.last_seen;
-                        existing.events_count += alert.events_count;
-
-                        if let Err(e) = self.db.update_alert(existing, Some(self.redis.clone())).await {
-                            error!("Failed to update alert in database: {}", e);
-                        }
-
-                        // Send updated alert to channel
-                        if self.alert_tx.send(existing.clone()).is_err() {
-                            warn!("Alert channel closed");
-                        }
-                        // For an updated alert we do not change total_alerts, but events_count changed.
-                        // Publish aggregated stats by reading Redis counters (fallback to DB and seed Redis)
-                        let tl: Option<u32> = self.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
-                        let ta: Option<u32> = self.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
-                        let aa: Option<u32> = self.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
-                        let ca: Option<u32> = self.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
-                        if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (tl, ta, aa, ca) {
-                            let stats = crate::types::DashboardStats {
-                                total_logs: tl as i64,
-                                total_alerts: ta as i64,
-                                active_alerts: aa as i64,
-                                critical_alerts: ca as i64,
-                            };
-                            let _ = self.stats_tx.send(stats);
-                        } else if let Ok((tl, ta, aa, ca)) = self.db.get_stats().await {
-                            let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
-                            let _ = self.stats_tx.send(stats.clone());
-                            let _ = self.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
-                            let _ = self.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
-                            let _ = self.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
-                            let _ = self.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
-                        }
-                    } else {
-                        // Save new alert
-                        if let Err(e) = self.db.create_alert(&alert).await {
-                            error!("Failed to save alert to database: {}", e);
-                        }
-
-                        // Trigger Response Engine (SOAR)
-                        self.response_engine.handle_alert(&alert).await;
-
-                        // Send new alert to channel
-                        if self.alert_tx.send(alert.clone()).is_err() {
-                            warn!("Alert channel closed");
-                        }
-                        // Increment Redis counters for alerts
-                        let _ = self.redis.increment_counter("siem:stats:total_alerts", 86400).await;
-                        let _ = self.redis.increment_counter("siem:stats:active_alerts", 86400).await;
-                        if alert.severity == crate::types::AlertSeverity::Critical {
-                            let _ = self.redis.increment_counter("siem:stats:critical_alerts", 86400).await;
-                        }
-                        // Publish aggregated stats by reading Redis counters (fallback to DB and seed Redis)
-                        let tl: Option<u32> = self.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
-                        let ta: Option<u32> = self.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
-                        let aa: Option<u32> = self.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
-                        let ca: Option<u32> = self.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
-                        if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (tl, ta, aa, ca) {
-                            let stats = crate::types::DashboardStats {
-                                total_logs: tl as i64,
-                                total_alerts: ta as i64,
-                                active_alerts: aa as i64,
-                                critical_alerts: ca as i64,
-                            };
-                            let _ = self.stats_tx.send(stats);
-                        } else if let Ok((tl, ta, aa, ca)) = self.db.get_stats().await {
-                            let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
-                            let _ = self.stats_tx.send(stats.clone());
-                            let _ = self.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
-                            let _ = self.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
-                            let _ = self.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
-                            let _ = self.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
-                        }
-                    }
+            match self.kafka.send_alert(&alert).await {
+                Ok(_) => {
+                    // also broadcast lightweight notification for real-time UIs
+                    let _ = self.alert_tx.send(alert.clone());
                 }
                 Err(e) => {
-                    error!("Failed to check existing alerts: {}", e);
+                    error!("Failed to enqueue alert to Kafka: {}. Falling back to immediate processing.", e);
+                    // Fallback: persist immediately and trigger response engine to avoid data loss
+                    if let Err(e) = self.db.create_alert(&alert).await {
+                        error!("Failed to save alert to database: {}", e);
+                    }
+                    self.response_engine.handle_alert(&alert).await;
+                    if self.alert_tx.send(alert.clone()).is_err() {
+                        warn!("Alert channel closed");
+                    }
                 }
             }
         }
