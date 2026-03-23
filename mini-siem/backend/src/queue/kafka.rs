@@ -24,6 +24,7 @@ use tokio::sync::mpsc::error::TrySendError;
 const DEFAULT_TOPIC: &str = "siem-logs";
 const ALERTS_TOPIC: &str = "siem-alerts";
 pub const ALERTS_DLQ_TOPIC: &str = "siem-alerts-dlq";
+pub const LOGS_DLQ_TOPIC: &str = "siem-logs-dlq";
 
 pub struct KafkaQueue {
     producer: FutureProducer,
@@ -99,6 +100,26 @@ impl KafkaQueue {
 
         let key = log.id.to_string();
         let record = FutureRecord::to(&self.topic)
+            .payload(&payload)
+            .key(&key)
+            .headers(headers);
+
+        match self.producer.send(record, Timeout::After(Duration::from_secs(5))).await {
+            Ok((_partition, _offset)) => Ok(()),
+            Err((e, _)) => Err(anyhow::anyhow!("Kafka send error: {:?}", e)),
+        }
+    }
+
+    /// Send a log to a specific topic (used for DLQ publishing).
+    pub async fn send_log_to(&self, topic: &str, log: &Log) -> Result<()> {
+        let payload = serde_json::to_string(log)?;
+        let headers = OwnedHeaders::new().insert(Header {
+            key: "source_ip",
+            value: Some(&log.source_ip),
+        });
+
+        let key = log.id.to_string();
+        let record = FutureRecord::to(topic)
             .payload(&payload)
             .key(&key)
             .headers(headers);

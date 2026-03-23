@@ -173,11 +173,16 @@ async fn main() -> anyhow::Result<()> {
     // Spawn Elasticsearch indexer worker: batch documents for bulk indexing
     let es = elastic_client.clone();
     let idx = elastic_index.clone();
+    let kafka_for_indexer = kafka.clone();
     let _es_handle = task::spawn(async move {
         use tokio::time::{timeout, Duration};
+        use mini_siem::queue::kafka::LOGS_DLQ_TOPIC;
+
         let mut buffer: Vec<std::sync::Arc<types::Log>> = Vec::with_capacity(1024);
         let batch_size = 500usize;
         let max_wait = Duration::from_millis(1000);
+        let max_retries = 3usize;
+        let mut backoff_ms = 500u64;
 
         loop {
             // wait for first item
@@ -198,20 +203,52 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            if !buffer.is_empty() {
-                // prepare slice of &Log
-                let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
+            if buffer.is_empty() {
+                continue;
+            }
+
+            // prepare slice of &Log
+            let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
+
+            // retry loop with exponential backoff
+            let mut attempt = 0usize;
+            let mut success = false;
+            loop {
                 match es.bulk_index(&idx, &refs).await {
                     Ok(_) => {
                         metrics::counter!("siem_logs_indexed_total", buffer.len() as u64);
+                        success = true;
+                        break;
                     }
                     Err(e) => {
-                        error!("Elasticsearch bulk index error: {}", e);
-                        metrics::counter!("siem_logs_index_errors_total", 1);
+                        attempt += 1;
+                        metrics::counter!("siem_logs_index_retries_total", 1);
+                        error!("Elasticsearch bulk index attempt {} error: {}", attempt, e);
+                        if attempt > max_retries {
+                            break;
+                        }
+                        // backoff
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(10000);
                     }
                 }
-                buffer.clear();
             }
+
+                if !success {
+                    // publish to DLQ topic to avoid silent loss
+                    for a in &buffer {
+                        if let Err(e) = kafka_for_indexer.send_log_to(LOGS_DLQ_TOPIC, &*a).await {
+                            error!("failed to publish log to DLQ: {}", e);
+                            metrics::counter!("siem_logs_index_dlq_errors_total", 1);
+                        } else {
+                            metrics::counter!("siem_logs_index_dlq_total", 1);
+                        }
+                    }
+                }
+
+            buffer.clear();
+            // reset backoff for next batch
+            backoff_ms = 500;
         }
     });
     
