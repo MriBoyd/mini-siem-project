@@ -301,18 +301,17 @@ impl DetectionEngine {
         
         // Handle alerts: enqueue to Kafka for async processing by workers.
         for alert in alerts_to_process {
-            match self.kafka.send_alert(&alert).await {
+            // Try to send to Kafka with retries and DLQ. If all attempts fail, fallback to immediate processing.
+            let send_res = self.kafka.send_alert_with_retry(&alert, 3, 200, Some(crate::queue::kafka::ALERTS_DLQ_TOPIC)).await;
+            match send_res {
                 Ok(_) => {
                     // also broadcast lightweight notification for real-time UIs
                     let _ = self.alert_tx.send(alert.clone());
-                            // Best-effort: publish lightweight dashboard stats so UIs get an immediate
-                            // update when an alert is enqueued. Use local aggregated counters (no
-                            // Redis roundtrips) for low-latency dashboards.
-                            // Notify the stats worker (non-blocking) to broadcast a coalesced update.
-                            let _ = self.stats_notify_tx.try_send(());
+                    // Notify the stats worker (non-blocking) to broadcast a coalesced update.
+                    let _ = self.stats_notify_tx.try_send(());
                 }
                 Err(e) => {
-                    error!("Failed to enqueue alert to Kafka: {}. Falling back to immediate processing.", e);
+                    error!("Failed to enqueue alert to Kafka after retries: {}. Falling back to immediate processing.", e);
                     // Fallback: persist immediately and trigger response engine to avoid data loss
                     if let Err(e) = self.db.create_alert(&alert).await {
                         error!("Failed to save alert to database: {}", e);

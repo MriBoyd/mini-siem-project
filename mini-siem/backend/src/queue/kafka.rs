@@ -18,6 +18,7 @@ use tokio::sync::mpsc::error::TrySendError;
 
 const DEFAULT_TOPIC: &str = "siem-logs";
 const ALERTS_TOPIC: &str = "siem-alerts";
+pub const ALERTS_DLQ_TOPIC: &str = "siem-alerts-dlq";
 
 pub struct KafkaQueue {
     producer: FutureProducer,
@@ -113,6 +114,53 @@ impl KafkaQueue {
         match self.producer.send(record, Timeout::After(Duration::from_secs(5))).await {
             Ok((_partition, _offset)) => Ok(()),
             Err((e, _)) => Err(anyhow::anyhow!("Kafka send error: {:?}", e)),
+        }
+    }
+
+    /// Send alert with retries and optional DLQ. `retries` is number of additional attempts
+    /// after the first try. `backoff_ms` is initial backoff and will double on each retry.
+    pub async fn send_alert_with_retry(&self, alert: &crate::types::Alert, retries: u32, backoff_ms: u64, dlq_topic: Option<&str>) -> Result<()> {
+        let payload = serde_json::to_string(alert)?;
+        let key = alert.id.to_string();
+
+        let mut attempt: u32 = 0;
+        let mut backoff = backoff_ms;
+
+        loop {
+            attempt += 1;
+            let record = FutureRecord::to(ALERTS_TOPIC)
+                .payload(&payload)
+                .key(&key);
+
+            match self.producer.send(record, Timeout::After(Duration::from_secs(5))).await {
+                Ok((_p, _o)) => return Ok(()),
+                Err((e, _)) => {
+                    tracing::warn!("kafka send attempt {} failed: {:?}", attempt, e);
+                    if attempt > retries {
+                        // last resort: publish to DLQ topic if provided
+                        if let Some(dt) = dlq_topic {
+                            let dlq_record = FutureRecord::to(dt)
+                                .payload(&payload)
+                                .key(&key);
+                            match self.producer.send(dlq_record, Timeout::After(Duration::from_secs(5))).await {
+                                Ok((_p2, _o2)) => {
+                                    tracing::info!("alert sent to DLQ topic {}", dt);
+                                    return Ok(());
+                                }
+                                Err((e2, _)) => {
+                                    return Err(anyhow::anyhow!("Kafka send failed and DLQ publish failed: {:?}; original: {:?}", e2, e));
+                                }
+                            }
+                        }
+
+                        return Err(anyhow::anyhow!("Kafka send failed after {} attempts: {:?}", attempt, e));
+                    }
+                }
+            }
+
+            // backoff before retry
+            tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+            backoff = (backoff * 2).min(10000);
         }
     }
 
