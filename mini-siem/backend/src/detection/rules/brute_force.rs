@@ -40,8 +40,8 @@ impl Rule for BruteForceRule {
     fn id(&self) -> &str {
         &self.id
     }
-    fn log_types(&self) -> Vec<String> {
-        vec!["auth".to_string()]
+    fn log_types(&self) -> Vec<crate::types::LogTag> {
+        vec![crate::types::LogTag::Auth]
     }
     
     async fn evaluate(&self, log: &Log) -> anyhow::Result<Option<Alert>> {

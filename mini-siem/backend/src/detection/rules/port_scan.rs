@@ -30,8 +30,8 @@ impl PortScanRule {
 impl Rule for PortScanRule {
     fn name(&self) -> &str { &self.name }
     fn id(&self) -> &str { &self.id }
-    fn log_types(&self) -> Vec<String> {
-        vec!["network".to_string()]
+    fn log_types(&self) -> Vec<crate::types::LogTag> {
+        vec![crate::types::LogTag::Network]
     }
     async fn evaluate(&self, _log: &Log) -> anyhow::Result<Option<Alert>> {
         // placeholder implementation

@@ -7,6 +7,7 @@ use futures_util::stream::{self, StreamExt};
 use smallvec::SmallVec;
 
 use crate::types::{Log, Alert};
+use crate::types::LogTag;
 use crate::queue::kafka::KafkaQueue;
 use crate::db::{PostgresDb, RedisCache};
 use crate::db::cache::Cache;
@@ -20,7 +21,7 @@ use super::rules::{
 
     pub struct DetectionEngine {
     // Map of log_type/tag -> list of rules (lock-free reads)
-    rules: ArcSwap<HashMap<String, Vec<Arc<dyn Rule + Send + Sync>>>>,
+    rules: ArcSwap<HashMap<LogTag, Vec<Arc<dyn Rule + Send + Sync>>>>,
     alert_tx: broadcast::Sender<Alert>,
     stats_tx: broadcast::Sender<crate::types::DashboardStats>,
     redis: RedisCache,
@@ -58,7 +59,7 @@ impl DetectionEngine {
 
     pub async fn reload_rules(&self) -> anyhow::Result<()> {
         let db_rules = self.db.get_enabled_rules().await?;
-        let mut new_rules: HashMap<String, Vec<Arc<dyn Rule + Send + Sync>>> = HashMap::new();
+        let mut new_rules: HashMap<LogTag, Vec<Arc<dyn Rule + Send + Sync>>> = HashMap::new();
 
         for dr in db_rules {
             match dr.rule_type.as_str() {
@@ -120,15 +121,15 @@ impl DetectionEngine {
 
             // Infer tags from the log (small, fast heuristics). Rules declare which tags they
             // handle via `log_types()` and were indexed by those tags at reload time.
-            let mut tags: Vec<String> = Vec::new();
+            let mut tags: Vec<LogTag> = Vec::new();
             if log.is_failed_login() || log.event_type.contains("auth") || log.event_type.contains("login") {
-                tags.push("auth".to_string());
+                tags.push(LogTag::Auth);
             }
             if log.event_type.contains("network") || log.event_type.contains("port") || log.service.as_deref().unwrap_or("").contains("ssh") {
-                tags.push("network".to_string());
+                tags.push(LogTag::Network);
             }
             if log.message.contains("http") || log.message.contains('.') || log.message.contains("powershell") || log.message.contains("wget") {
-                tags.push("malware".to_string());
+                tags.push(LogTag::Malware);
             }
 
             // Collect candidate rules from the index
@@ -140,7 +141,7 @@ impl DetectionEngine {
 
             // Fallback: if no candidates found, run rules indexed under "malware" (lightweight) if present
             if candidate_rules.is_empty() {
-                if let Some(v) = rules_map.get("malware") {
+                if let Some(v) = rules_map.get(&LogTag::Malware) {
                     candidate_rules.extend(v.iter().cloned());
                 }
             }
