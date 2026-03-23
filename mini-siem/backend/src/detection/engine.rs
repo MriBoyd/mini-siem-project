@@ -11,16 +11,16 @@ use crate::types::LogTag;
 use crate::queue::kafka::KafkaQueue;
 use crate::db::{PostgresDb, RedisCache};
 use crate::response::engine::ResponseEngine;
+use super::compiled_rule::CompiledRule;
 use super::rules::{
-    Rule, 
     brute_force::BruteForceRule,
     port_scan::PortScanRule,
     malware::MalwareDetectionRule,
 };
 
     pub struct DetectionEngine {
-    // Map of log_type/tag -> list of rules (lock-free reads)
-    rules: ArcSwap<HashMap<LogTag, Vec<Arc<dyn Rule + Send + Sync>>>>,
+    // Map of log_type/tag -> list of precompiled rules (lock-free reads)
+    rules: ArcSwap<HashMap<LogTag, Vec<Arc<CompiledRule>>>>,
     alert_tx: broadcast::Sender<Alert>,
     stats_tx: broadcast::Sender<crate::types::DashboardStats>,
     redis: RedisCache,
@@ -178,43 +178,45 @@ impl DetectionEngine {
 
     pub async fn reload_rules(&self) -> anyhow::Result<()> {
         let db_rules = self.db.get_enabled_rules().await?;
-        let mut new_rules: HashMap<LogTag, Vec<Arc<dyn Rule + Send + Sync>>> = HashMap::new();
+        let mut new_rules: HashMap<LogTag, Vec<Arc<CompiledRule>>> = HashMap::new();
 
         for dr in db_rules {
             match dr.rule_type.as_str() {
                 "brute_force" => {
-                    let rule = Arc::new(BruteForceRule::new(
+                    let concrete = BruteForceRule::new(
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(5) as u32,
                         dr.window_seconds.unwrap_or(300) as i64,
                         Arc::new(self.redis.clone()),
-                    ));
-                    // index by rule-provided log types
-                    for lt in rule.log_types() {
-                        new_rules.entry(lt).or_default().push(rule.clone());
+                    );
+                    let compiled = Arc::new(CompiledRule::BruteForce(concrete));
+                    for lt in compiled.log_types() {
+                        new_rules.entry(lt).or_default().push(compiled.clone());
                     }
                 }
                 "port_scan" => {
-                    let rule = Arc::new(PortScanRule::new(
+                    let concrete = PortScanRule::new(
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(20) as u32,
                         dr.window_seconds.unwrap_or(60) as i64,
                         Arc::new(self.redis.clone()),
-                    ));
-                    for lt in rule.log_types() {
-                        new_rules.entry(lt).or_default().push(rule.clone());
+                    );
+                    let compiled = Arc::new(CompiledRule::PortScan(concrete));
+                    for lt in compiled.log_types() {
+                        new_rules.entry(lt).or_default().push(compiled.clone());
                     }
                 }
                 "malware" => {
-                    let rule = Arc::new(MalwareDetectionRule::new(
+                    let concrete = MalwareDetectionRule::new(
                         dr.id.to_string(),
                         dr.name,
                         Arc::new(self.redis.clone()),
-                    ));
-                    for lt in rule.log_types() {
-                        new_rules.entry(lt).or_default().push(rule.clone());
+                    );
+                    let compiled = Arc::new(CompiledRule::Malware(concrete));
+                    for lt in compiled.log_types() {
+                        new_rules.entry(lt).or_default().push(compiled.clone());
                     }
                 }
                 _ => warn!("Unknown rule type: {}", dr.rule_type),
@@ -238,7 +240,7 @@ impl DetectionEngine {
         {
             // Determine relevant rule types/tags for this log to avoid evaluating all rules.
             let rules_map = self.rules.load();
-            let mut candidate_rules: SmallVec<[Arc<dyn Rule + Send + Sync>; 8]> = SmallVec::new();
+            let mut candidate_rules: SmallVec<[Arc<CompiledRule>; 8]> = SmallVec::new();
 
             // Infer tags from the log (small, fast heuristics). Rules declare which tags they
             // handle via `log_types()` and were indexed by those tags at reload time.
@@ -269,7 +271,7 @@ impl DetectionEngine {
 
             let mut eval_futures = Vec::with_capacity(candidate_rules.len());
             for rule in candidate_rules.iter() {
-                let name = rule.name().to_string();
+                let name = rule.name();
                 let rule_arc = rule.clone();
                 let log_clone = log.clone();
                 eval_futures.push(async move { (name, rule_arc.evaluate(&log_clone).await) });
