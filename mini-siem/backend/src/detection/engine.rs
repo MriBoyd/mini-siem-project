@@ -309,12 +309,16 @@ impl DetectionEngine {
             let send_res = self.kafka.send_alert_with_retry(&alert, 3, 200, Some(crate::queue::kafka::ALERTS_DLQ_TOPIC)).await;
             match send_res {
                 Ok(_) => {
+                    // record a successful enqueue
+                    metrics::counter!("siem_alerts_sent_total", 1);
                     // also broadcast lightweight notification for real-time UIs
                     let _ = self.alert_tx.send(alert.clone());
                     // Notify the stats worker (non-blocking) to broadcast a coalesced update.
                     let _ = self.stats_notify_tx.try_send(());
                 }
                 Err(e) => {
+                    // record fallback to DB
+                    metrics::counter!("siem_alerts_fallback_db_total", 1);
                     error!("Failed to enqueue alert to Kafka after retries: {}. Falling back to immediate processing.", e);
                     // Fallback: persist immediately and trigger response engine to avoid data loss
                     if let Err(e) = self.db.create_alert(&alert).await {

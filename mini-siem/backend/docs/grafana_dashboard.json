@@ -22,7 +22,7 @@
       "type":"graph",
       "title":"Kafka partition lag",
       "targets":[
-        { "expr": "sum(siem_kafka_partition_lag) by (topic)", "legendFormat":"{{topic}}" }
+        { "expr": "sum(siem_kafka_partition_lag) by (topic, partition)", "legendFormat":"{{topic}} / {{partition}}" }
       ]
     },
     {
@@ -37,6 +37,32 @@
       "title":"Kafka send retries",
       "targets":[
         { "expr": "sum(siem_kafka_send_retries_total)", "legendFormat":"retries" }
+      ]
+    }
+    ,
+    {
+      "type":"graph",
+      "title":"Processing latency p50/p95 over time",
+      "targets":[
+        { "expr": "histogram_quantile(0.5, sum(rate(siem_processing_latency_seconds_bucket[5m])) by (le))", "legendFormat":"p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(siem_processing_latency_seconds_bucket[5m])) by (le))", "legendFormat":"p95" }
+      ]
+    },
+    {
+      "type":"graph",
+      "title":"Rule execution p50/p95 by rule",
+      "targets":[
+        { "expr": "histogram_quantile(0.5, sum(rate(siem_rule_execution_seconds_bucket[5m])) by (le, rule))", "legendFormat":"p50 {{rule}}" },
+        { "expr": "histogram_quantile(0.95, sum(rate(siem_rule_execution_seconds_bucket[5m])) by (le, rule))", "legendFormat":"p95 {{rule}}" }
+      ]
+    },
+    {
+      "type":"graph",
+      "title":"Alerts rate (per second)",
+      "targets":[
+        { "expr": "rate(siem_alerts_sent_total[5m])", "legendFormat":"alerts_sent" },
+        { "expr": "rate(siem_alerts_fallback_db_total[5m])", "legendFormat":"alerts_fallback_db" },
+        { "expr": "rate(siem_alerts_dlq_total[5m])", "legendFormat":"alerts_dlq" }
       ]
     }
   ],
