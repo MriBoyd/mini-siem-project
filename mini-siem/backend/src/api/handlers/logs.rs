@@ -9,6 +9,7 @@ use crate::db::cache::Cache;
 use crate::types::{Log, LogSeverity};
 use tokio::sync::mpsc::error::TrySendError;
 use std::sync::Arc;
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct IngestLogRequest {
@@ -115,6 +116,34 @@ pub async fn ingest_log(
         status: "accepted".to_string(),
         accepted_at: now,
     })
+}
+
+#[actix_web::get("/api/v1/logs/recent")]
+pub async fn recent_logs(state: web::Data<AppState>) -> impl Responder {
+    // Return recent logs from Elasticsearch for UI compatibility.
+    if let Some(el) = state.elastic.as_ref() {
+        let q = serde_json::json!({ "match_all": {} });
+        match el.as_ref().search(&crate::config::Config::from_env().unwrap().elasticsearch_index, q, 0, 50).await {
+            Ok(v) => {
+                // extract hits -> _source using JSON pointer
+                let mut res: Vec<Value> = Vec::new();
+                if let Some(hits_arr) = v.pointer("/hits/hits").and_then(|p| p.as_array()) {
+                    for item in hits_arr.iter() {
+                        if let Some(src) = item.get("_source") {
+                            res.push(src.clone());
+                        }
+                    }
+                }
+                return HttpResponse::Ok().json(res);
+            }
+            Err(e) => {
+                tracing::error!("elasticsearch search error: {}", e);
+                HttpResponse::ServiceUnavailable().body("elasticsearch unavailable")
+            }
+        }
+    } else {
+        HttpResponse::ServiceUnavailable().body("elasticsearch not configured")
+    }
 }
 
 #[derive(Debug, Deserialize)]

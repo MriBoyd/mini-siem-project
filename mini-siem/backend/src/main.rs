@@ -260,6 +260,7 @@ async fn main() -> anyhow::Result<()> {
         log_tx: log_tx.clone(),
         alert_tx: alert_tx.clone(),
         stats_tx: stats_tx.clone(),
+        elastic: Some(elastic_client.clone()),
     });
 
     // Start dedicated alert worker to process alerts from Kafka asynchronously

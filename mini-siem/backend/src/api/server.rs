@@ -10,6 +10,7 @@ use crate::db::PostgresDb;
 use crate::db::redis::RedisCache;
 use crate::queue::kafka::KafkaQueue;
 use crate::types::{Log, Alert};
+use crate::db::ElasticClient;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -19,6 +20,7 @@ pub struct AppState {
     pub log_tx: mpsc::Sender<std::sync::Arc<Log>>,
     pub alert_tx: broadcast::Sender<Alert>,
     pub stats_tx: broadcast::Sender<crate::types::DashboardStats>,
+    pub elastic: Option<Arc<ElasticClient>>,
 }
 
 pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
@@ -59,6 +61,7 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
             // Public logs ingest endpoints (register before the protected scope)
             .service(logs::ingest_log)
             .service(logs::ingest_batch)
+            .service(logs::recent_logs)
 
             // Protected routes
             .service(
