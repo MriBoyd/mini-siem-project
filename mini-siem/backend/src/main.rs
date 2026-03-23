@@ -143,9 +143,10 @@ async fn main() -> anyhow::Result<()> {
         let rl_per_ip = cfg.rate_limit_per_ip;
         let rl_window = cfg.rate_limit_window_ms;
         let rl_sample = cfg.rate_limit_sample_rate;
+        let redis_for_consumer = redis.clone();
         task::spawn(async move {
             tokio::select! {
-                res = kafka_consumer.consume_logs(log_tx_clone, Some(counter), cfg.kafka_pause_on_full, cfg.kafka_pause_timeout_ms, rl_per_ip, rl_window, rl_sample) => {
+                res = kafka_consumer.consume_logs(log_tx_clone, Some(counter), cfg.kafka_pause_on_full, cfg.kafka_pause_timeout_ms, rl_per_ip, rl_window, rl_sample, redis_for_consumer) => {
                     if let Err(e) = res {
                         error!("Kafka consumer error: {}", e);
                     }

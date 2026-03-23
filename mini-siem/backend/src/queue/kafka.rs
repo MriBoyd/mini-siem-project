@@ -9,10 +9,10 @@ use rdkafka::util::Timeout;
 use serde_json;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use dashmap::DashMap;
-use std::sync::atomic::{AtomicU64};
-use rand::Rng;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use crate::db::cache::Cache;
+use crate::db::redis::RedisCache;
 use metrics;
 
 use crate::types::Log;
@@ -173,26 +173,8 @@ impl KafkaQueue {
 
     /// Consume from Kafka and forward logs into the provided `tx`.
     /// `full_counter` is incremented when the channel is full (monitoring aid).
-    pub async fn consume_logs(&self, tx: mpsc::Sender<Log>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32) -> Result<()> {
+    pub async fn consume_logs(&self, tx: mpsc::Sender<Log>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
         let mut stream = self.consumer.stream();
-
-        // In-memory per-IP counters for rate limiting (leaky window). Keyed by source_ip.
-        #[derive(Debug)]
-        struct IpCounter {
-            count: AtomicUsize,
-            window_start_ms: AtomicU64,
-        }
-
-        impl IpCounter {
-            fn new(start_ms: u64) -> Self {
-                Self {
-                    count: AtomicUsize::new(0),
-                    window_start_ms: AtomicU64::new(start_ms),
-                }
-            }
-        }
-
-        let ip_counters: DashMap<String, IpCounter> = DashMap::new();
 
         while let Some(message) = stream.next().await {
             match message {
@@ -214,34 +196,31 @@ impl KafkaQueue {
                     }
                     if let Some(Ok(payload)) = msg.payload_view::<str>() {
                             if let Ok(log) = serde_json::from_str::<Log>(payload) {
-                                // Per-IP rate limiting / sampling to protect against log storms.
+                                // Centralized Redis sliding-window rate limiter per IP
                                 let source_ip = log.source_ip.clone();
-                                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-                                let mut allow = true;
-
-                                let entry = ip_counters.entry(source_ip.clone()).or_insert_with(|| IpCounter::new(now));
-                                let ws = entry.window_start_ms.load(std::sync::atomic::Ordering::Relaxed);
-                                if now.saturating_sub(ws) > rate_limit_window_ms {
-                                    // reset window
-                                    entry.window_start_ms.store(now, std::sync::atomic::Ordering::Relaxed);
-                                    entry.count.store(0, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                let prev = entry.count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                if prev >= rate_limit_per_ip {
-                                    // exceeded: sample 1 in `rate_limit_sample_rate`
-                                    let mut rng = rand::thread_rng();
-                                    let r: u32 = rng.gen_range(0..rate_limit_sample_rate.max(1));
-                                    if r != 0 {
-                                        // drop this log
-                                        metrics::counter!("siem_logs_rate_limited_total", 1, "source_ip" => source_ip.clone());
-                                        allow = false;
-                                    } else {
-                                        metrics::counter!("siem_logs_sampled_total", 1, "source_ip" => source_ip.clone());
+                                let rl_key = format!("siem:ratelimit:ip:{}", source_ip);
+                                let allowed = match redis.allow_sliding_window(&rl_key, rate_limit_window_ms, rate_limit_per_ip as u32).await {
+                                    Ok(true) => true,
+                                    Ok(false) => {
+                                        // exceeded: deterministic sampling based on log id hash
+                                        let mut hasher = DefaultHasher::new();
+                                        log.id.hash(&mut hasher);
+                                        let h = hasher.finish();
+                                        let sample = if rate_limit_sample_rate <= 1 { true } else { (h % (rate_limit_sample_rate as u64)) == 0 };
+                                        if sample {
+                                            metrics::counter!("siem_logs_sampled_total", 1, "source_ip" => source_ip.clone());
+                                        } else {
+                                            metrics::counter!("siem_logs_rate_limited_total", 1, "source_ip" => source_ip.clone());
+                                        }
+                                        sample
                                     }
-                                }
+                                    Err(e) => {
+                                        tracing::warn!("redis rate limiter error: {} - allowing log to avoid data loss", e);
+                                        true
+                                    }
+                                };
 
-                                if !allow {
-                                    // simulate as if dropped: continue to next message
+                                if !allowed {
                                     continue;
                                 }
                             // Use try_send to avoid blocking the kafka stream when the
