@@ -73,6 +73,7 @@ impl KafkaQueue {
                             tracing::warn!("attempt {}: failed to create Kafka consumer: {}", attempt, e);
                         }
                     }
+
                 }
                 Err(e) => {
                     tracing::warn!("attempt {}: failed to create Kafka producer: {}", attempt, e);
@@ -173,7 +174,7 @@ impl KafkaQueue {
 
     /// Consume from Kafka and forward logs into the provided `tx`.
     /// `full_counter` is incremented when the channel is full (monitoring aid).
-    pub async fn consume_logs(&self, tx: mpsc::Sender<std::sync::Arc<Log>>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
+    pub async fn consume_logs(&self, tx: mpsc::Sender<std::sync::Arc<Log>>, index_tx: Option<mpsc::Sender<std::sync::Arc<Log>>>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
         let mut stream = self.consumer.stream();
 
         while let Some(message) = stream.next().await {
@@ -185,47 +186,45 @@ impl KafkaQueue {
                     let offset = msg.offset();
                     metrics::gauge!("siem_kafka_partition_consumer_offset", offset as f64, "topic" => topic.clone(), "partition" => partition.to_string());
                     // try to fetch highwater mark for this partition
-                    match self.consumer.fetch_watermarks(&topic, partition, Timeout::After(Duration::from_millis(500))) {
-                        Ok((_low, high)) => {
-                            metrics::gauge!("siem_kafka_partition_highwater_offset", high as f64, "topic" => topic.clone(), "partition" => partition.to_string());
-                            // kafka lag can be derived as high - offset
-                            let lag = if high >= offset { (high - offset) as f64 } else { 0.0 };
-                            metrics::gauge!("siem_kafka_partition_lag", lag, "topic" => topic.clone(), "partition" => partition.to_string());
-                        }
-                        Err(_) => {}
+                    if let Ok((_low, high)) = self.consumer.fetch_watermarks(&topic, partition, Timeout::After(Duration::from_millis(500))) {
+                        metrics::gauge!("siem_kafka_partition_highwater_offset", high as f64, "topic" => topic.clone(), "partition" => partition.to_string());
+                        let lag = if high >= offset { (high - offset) as f64 } else { 0.0 };
+                        metrics::gauge!("siem_kafka_partition_lag", lag, "topic" => topic.clone(), "partition" => partition.to_string());
                     }
-                        if let Some(payload) = msg.payload() {
-                            if let Ok(log) = serde_json::from_slice::<Log>(payload) {
-                                // Centralized Redis sliding-window rate limiter per IP
-                                let source_ip = log.source_ip.clone();
-                                let rl_key = format!("siem:ratelimit:ip:{}", source_ip);
-                                let allowed = match redis.allow_sliding_window(&rl_key, rate_limit_window_ms, rate_limit_per_ip as u32).await {
-                                    Ok(true) => true,
-                                    Ok(false) => {
-                                        // exceeded: deterministic sampling based on log id hash
-                                        let mut hasher = DefaultHasher::new();
-                                        log.id.hash(&mut hasher);
-                                        let h = hasher.finish();
-                                        let sample = if rate_limit_sample_rate <= 1 { true } else { (h % (rate_limit_sample_rate as u64)) == 0 };
-                                        if sample {
-                                            metrics::counter!("siem_logs_sampled_total", 1, "source_ip" => source_ip.clone());
-                                        } else {
-                                            metrics::counter!("siem_logs_rate_limited_total", 1, "source_ip" => source_ip.clone());
-                                        }
-                                        sample
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("redis rate limiter error: {} - allowing log to avoid data loss", e);
-                                        true
-                                    }
-                                };
 
-                                if !allowed {
-                                    continue;
+                    if let Some(payload) = msg.payload() {
+                        if let Ok(log) = serde_json::from_slice::<Log>(payload) {
+                            // Centralized Redis sliding-window rate limiter per IP
+                            let source_ip = log.source_ip.clone();
+                            let rl_key = format!("siem:ratelimit:ip:{}", source_ip);
+                            let allowed = match redis.allow_sliding_window(&rl_key, rate_limit_window_ms, rate_limit_per_ip as u32).await {
+                                Ok(true) => true,
+                                Ok(false) => {
+                                    let mut hasher = DefaultHasher::new();
+                                    log.id.hash(&mut hasher);
+                                    let h = hasher.finish();
+                                    let sample = if rate_limit_sample_rate <= 1 { true } else { (h % (rate_limit_sample_rate as u64)) == 0 };
+                                    if sample {
+                                        metrics::counter!("siem_logs_sampled_total", 1, "source_ip" => source_ip.clone());
+                                    } else {
+                                        metrics::counter!("siem_logs_rate_limited_total", 1, "source_ip" => source_ip.clone());
+                                    }
+                                    sample
                                 }
-                                // Send Arc<Log> (cheap clone of pointer) to downstream processor.
-                                let arc_log = std::sync::Arc::new(log);
-                                match tx.try_send(arc_log) {
+                                Err(e) => {
+                                    tracing::warn!("redis rate limiter error: {} - allowing log to avoid data loss", e);
+                                    true
+                                }
+                            };
+
+                            if !allowed {
+                                continue;
+                            }
+
+                            let arc_log = std::sync::Arc::new(log);
+
+                            // Try sending to primary pipeline (detection)
+                            match tx.try_send(arc_log.clone()) {
                                 Ok(_) => {
                                     if let Some(cnt) = full_counter.as_ref() {
                                         cnt.store(0, Ordering::Relaxed);
@@ -233,113 +232,60 @@ impl KafkaQueue {
                                 }
                                 Err(TrySendError::Full(l)) => {
                                     if pause_on_full {
-                                        // Try to pause consumer and block until there's space.
-                                        match self.consumer.assignment() {
-                                            Ok(assignment) => {
-                                                if let Err(e) = self.consumer.pause(&assignment) {
-                                                    tracing::warn!("failed to pause consumer: {}", e);
-                                                }
-                                                // Use timeout controlled by caller; 0 means wait indefinitely
-                                                if pause_timeout_ms == 0 {
-                                                    match tx.send(l).await {
-                                                        Ok(()) => {
-                                                            if let Err(e) = self.consumer.resume(&assignment) {
-                                                                tracing::warn!("failed to resume consumer: {}", e);
-                                                            }
-                                                            if let Some(cnt) = full_counter.as_ref() {
-                                                                cnt.store(0, Ordering::Relaxed);
-                                                            }
-                                                        }
-                                                        Err(_) => {
-                                                            tracing::warn!("log channel closed while sending, stopping consumer");
-                                                            break;
-                                                        }
-                                                    }
+                                        if let Ok(assignment) = self.consumer.assignment() {
+                                            if let Err(e) = self.consumer.pause(&assignment) {
+                                                tracing::warn!("failed to pause consumer: {}", e);
+                                            }
+
+                                            if pause_timeout_ms == 0 {
+                                                if tx.send(l).await.is_ok() {
+                                                    let _ = self.consumer.resume(&assignment);
+                                                    if let Some(cnt) = full_counter.as_ref() { cnt.store(0, Ordering::Relaxed); }
                                                 } else {
-                                                    use tokio::time::{timeout, Duration};
-                                                    match timeout(Duration::from_millis(pause_timeout_ms), tx.send(l)).await {
-                                                        Ok(Ok(())) => {
-                                                            if let Err(e) = self.consumer.resume(&assignment) {
-                                                                tracing::warn!("failed to resume consumer: {}", e);
-                                                            }
-                                                            if let Some(cnt) = full_counter.as_ref() {
-                                                                cnt.store(0, Ordering::Relaxed);
-                                                            }
-                                                        }
-                                                        Ok(Err(_)) => {
-                                                            tracing::warn!("log channel closed while sending, stopping consumer");
-                                                            break;
-                                                        }
-                                                        Err(_) => {
-                                                            // timed out
-                                                            if let Err(e) = self.consumer.resume(&assignment) {
-                                                                tracing::warn!("failed to resume consumer: {}", e);
-                                                            }
-                                                            if let Some(cnt) = full_counter.as_ref() {
-                                                                cnt.fetch_add(1, Ordering::Relaxed);
-                                                            }
-                                                            tracing::warn!("log channel full after pause timeout, dropping message");
-                                                        }
-                                                    }
+                                                    tracing::warn!("log channel closed while sending, stopping consumer");
+                                                    break;
+                                                }
+                                            } else {
+                                                use tokio::time::{timeout, Duration};
+                                                match timeout(Duration::from_millis(pause_timeout_ms), tx.send(l)).await {
+                                                    Ok(Ok(())) => { let _ = self.consumer.resume(&assignment); if let Some(cnt) = full_counter.as_ref() { cnt.store(0, Ordering::Relaxed); } }
+                                                    Ok(Err(_)) => { tracing::warn!("log channel closed while sending, stopping consumer"); break; }
+                                                    Err(_) => { let _ = self.consumer.resume(&assignment); if let Some(cnt) = full_counter.as_ref() { cnt.fetch_add(1, Ordering::Relaxed); } tracing::warn!("log channel full after pause timeout, dropping message"); }
                                                 }
                                             }
-                                            Err(e) => {
-                                                tracing::warn!("couldn't get consumer assignment: {}", e);
-                                                // fallback to short wait
-                                                use tokio::time::{timeout, Duration};
-                                                let wait_ms = if pause_timeout_ms == 0 { 50 } else { std::cmp::min(50, pause_timeout_ms) };
-                                                match timeout(Duration::from_millis(wait_ms), tx.send(l)).await {
-                                                    Ok(Ok(())) => {
-                                                        if let Some(cnt) = full_counter.as_ref() {
-                                                            cnt.store(0, Ordering::Relaxed);
-                                                        }
-                                                    }
-                                                    Ok(Err(_)) => {
-                                                        tracing::warn!("log channel closed while sending, stopping consumer");
-                                                        break;
-                                                    }
-                                                    Err(_) => {
-                                                        if let Some(cnt) = full_counter.as_ref() {
-                                                            cnt.fetch_add(1, Ordering::Relaxed);
-                                                        }
-                                                        tracing::warn!("log channel full after wait, dropping message");
-                                                    }
-                                                }
+                                        } else {
+                                            use tokio::time::{timeout, Duration};
+                                            let wait_ms = if pause_timeout_ms == 0 { 50 } else { std::cmp::min(50, pause_timeout_ms) };
+                                            match timeout(Duration::from_millis(wait_ms), tx.send(l)).await {
+                                                Ok(Ok(())) => { if let Some(cnt) = full_counter.as_ref() { cnt.store(0, Ordering::Relaxed); } }
+                                                Ok(Err(_)) => { tracing::warn!("log channel closed while sending, stopping consumer"); break; }
+                                                Err(_) => { if let Some(cnt) = full_counter.as_ref() { cnt.fetch_add(1, Ordering::Relaxed); } tracing::warn!("log channel full after wait, dropping message"); }
                                             }
                                         }
                                     } else {
-                                        // fallback: short wait then drop
                                         use tokio::time::{timeout, Duration};
                                         match timeout(Duration::from_millis(50), tx.send(l)).await {
-                                            Ok(Ok(())) => {
-                                                if let Some(cnt) = full_counter.as_ref() {
-                                                    cnt.store(0, Ordering::Relaxed);
-                                                }
-                                            }
-                                            Ok(Err(_)) => {
-                                                tracing::warn!("log channel closed while sending, stopping consumer");
-                                                break;
-                                            }
-                                            Err(_) => {
-                                                if let Some(cnt) = full_counter.as_ref() {
-                                                    cnt.fetch_add(1, Ordering::Relaxed);
-                                                }
-                                                tracing::warn!("log channel full after wait, dropping message");
-                                            }
+                                            Ok(Ok(())) => { if let Some(cnt) = full_counter.as_ref() { cnt.store(0, Ordering::Relaxed); } }
+                                            Ok(Err(_)) => { tracing::warn!("log channel closed while sending, stopping consumer"); break; }
+                                            Err(_) => { if let Some(cnt) = full_counter.as_ref() { cnt.fetch_add(1, Ordering::Relaxed); } tracing::warn!("log channel full after wait, dropping message"); }
                                         }
                                     }
                                 }
-                                Err(TrySendError::Closed(_)) => {
-                                    tracing::warn!("log channel closed, stopping consumer");
-                                    break;
+                                Err(TrySendError::Closed(_)) => { tracing::warn!("log channel closed, stopping consumer"); break; }
+                            }
+
+                            // best-effort forward to indexer
+                            if let Some(idx) = index_tx.as_ref() {
+                                match idx.try_send(arc_log.clone()) {
+                                    Ok(_) => {}
+                                    Err(TrySendError::Full(_)) => { metrics::counter!("siem_logs_indexer_full", 1); }
+                                    Err(TrySendError::Closed(_)) => { tracing::warn!("indexer channel closed"); }
                                 }
                             }
                         }
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("kafka consumer error: {}", e);
-                }
+                Err(e) => { tracing::warn!("kafka consumer error: {}", e); }
             }
         }
 

@@ -121,6 +121,17 @@ async fn main() -> anyhow::Result<()> {
     // Start Kafka consumer (receives logs from Go agent)
     let kafka_consumer = kafka.clone();
     let log_tx_clone = log_tx.clone();
+    // Indexer channel and Elasticsearch client
+    let (index_tx, mut index_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
+    let elastic_host = cfg.elasticsearch_host.clone();
+    let elastic_index = cfg.elasticsearch_index.clone();
+    let elastic_client = match mini_siem::db::ElasticClient::new(&elastic_host).await {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            error!("Failed to connect to Elasticsearch (indexing disabled): {}", e);
+            Arc::new(mini_siem::db::ElasticClient::new(&elastic_host).await.unwrap_or_else(|_| panic!("es init")))
+        }
+    };
     let mut kafka_shutdown_rx = shutdown_tx.subscribe();
     let log_channel_full_counter = std::sync::Arc::new(AtomicUsize::new(0));
     // Start Prometheus exporter and monitoring
@@ -144,9 +155,10 @@ async fn main() -> anyhow::Result<()> {
         let rl_window = cfg.rate_limit_window_ms;
         let rl_sample = cfg.rate_limit_sample_rate;
         let redis_for_consumer = redis.clone();
+        let index_tx_clone = index_tx.clone();
         task::spawn(async move {
             tokio::select! {
-                res = kafka_consumer.consume_logs(log_tx_clone, Some(counter), cfg.kafka_pause_on_full, cfg.kafka_pause_timeout_ms, rl_per_ip, rl_window, rl_sample, redis_for_consumer) => {
+                res = kafka_consumer.consume_logs(log_tx_clone, Some(index_tx_clone), Some(counter), cfg.kafka_pause_on_full, cfg.kafka_pause_timeout_ms, rl_per_ip, rl_window, rl_sample, redis_for_consumer) => {
                     if let Err(e) = res {
                         error!("Kafka consumer error: {}", e);
                     }
@@ -157,6 +169,51 @@ async fn main() -> anyhow::Result<()> {
             }
         })
     };
+
+    // Spawn Elasticsearch indexer worker: batch documents for bulk indexing
+    let es = elastic_client.clone();
+    let idx = elastic_index.clone();
+    let _es_handle = task::spawn(async move {
+        use tokio::time::{timeout, Duration};
+        let mut buffer: Vec<std::sync::Arc<types::Log>> = Vec::with_capacity(1024);
+        let batch_size = 500usize;
+        let max_wait = Duration::from_millis(1000);
+
+        loop {
+            // wait for first item
+            match index_rx.recv().await {
+                Some(l) => buffer.push(l),
+                None => break, // channel closed
+            }
+
+            // drain until batch_size or timeout
+            loop {
+                if buffer.len() >= batch_size {
+                    break;
+                }
+                match timeout(max_wait, index_rx.recv()).await {
+                    Ok(Some(l)) => buffer.push(l),
+                    Ok(None) => break,
+                    Err(_) => break, // timed out
+                }
+            }
+
+            if !buffer.is_empty() {
+                // prepare slice of &Log
+                let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
+                match es.bulk_index(&idx, &refs).await {
+                    Ok(_) => {
+                        metrics::counter!("siem_logs_indexed_total", buffer.len() as u64);
+                    }
+                    Err(e) => {
+                        error!("Elasticsearch bulk index error: {}", e);
+                        metrics::counter!("siem_logs_index_errors_total", 1);
+                    }
+                }
+                buffer.clear();
+            }
+        }
+    });
     
     // Create shared application state for the API handlers.
     let app_state = web::Data::new(api::server::AppState {

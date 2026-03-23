@@ -53,7 +53,8 @@ impl ElasticClient {
     }
 
     /// Bulk index logs into the provided index. Uses the Bulk API with NDJSON payload.
-    pub async fn bulk_index(&self, index: &str, logs: &[Log]) -> Result<()> {
+    /// Accepts a slice of `&Log` to avoid unnecessary cloning when callers hold `Arc<Log>`.
+    pub async fn bulk_index(&self, index: &str, logs: &[&Log]) -> Result<()> {
         if logs.is_empty() {
             return Ok(());
         }

@@ -14,6 +14,8 @@ pub struct Config {
     pub rate_limit_per_ip: usize,
     pub rate_limit_window_ms: u64,
     pub rate_limit_sample_rate: u32,
+    pub elasticsearch_host: String,
+    pub elasticsearch_index: String,
 }
 
 impl Config {
@@ -41,6 +43,8 @@ impl Config {
         let rate_limit_sample_rate = env::var("RATE_LIMIT_SAMPLE_RATE").ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(10);
+        let elasticsearch_host = env::var("ELASTICSEARCH_HOST").unwrap_or_else(|_| "http://127.0.0.1:9200".to_string());
+        let elasticsearch_index = env::var("ELASTICSEARCH_INDEX").unwrap_or_else(|_| "mini-siem-logs".to_string());
 
         Ok(Self {
             database_url,
@@ -54,6 +58,8 @@ impl Config {
             rate_limit_per_ip,
             rate_limit_window_ms,
             rate_limit_sample_rate,
+            elasticsearch_host,
+            elasticsearch_index,
         })
     }
 }
