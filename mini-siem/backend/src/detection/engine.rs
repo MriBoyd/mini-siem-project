@@ -6,11 +6,10 @@ use std::collections::HashMap;
 use futures_util::stream::{self, StreamExt};
 use smallvec::SmallVec;
 
-use crate::types::{Log, Alert};
+use crate::types::{Log, Alert, AlertSeverity};
 use crate::types::LogTag;
 use crate::queue::kafka::KafkaQueue;
 use crate::db::{PostgresDb, RedisCache};
-use crate::db::cache::Cache;
 use crate::response::engine::ResponseEngine;
 use super::rules::{
     Rule, 
@@ -28,6 +27,49 @@ use super::rules::{
     db: Arc<PostgresDb>,
     response_engine: Arc<ResponseEngine>,
     kafka: Arc<KafkaQueue>,
+    // Local in-memory aggregated stats to avoid Redis roundtrips on every alert/log
+    local_stats: Arc<LocalStats>,
+}
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub struct LocalStats {
+    pub total_logs: AtomicU64,
+    pub total_alerts: AtomicU64,
+    pub active_alerts: AtomicU64,
+    pub critical_alerts: AtomicU64,
+}
+
+impl LocalStats {
+    pub fn new() -> Self {
+        Self {
+            total_logs: AtomicU64::new(0),
+            total_alerts: AtomicU64::new(0),
+            active_alerts: AtomicU64::new(0),
+            critical_alerts: AtomicU64::new(0),
+        }
+    }
+
+    pub fn incr_log(&self) {
+        self.total_logs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_alert(&self, is_critical: bool) {
+        self.total_alerts.fetch_add(1, Ordering::Relaxed);
+        self.active_alerts.fetch_add(1, Ordering::Relaxed);
+        if is_critical {
+            self.critical_alerts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Atomically fetch and reset counters. Returns (tl, ta, aa, ca).
+    pub fn take_and_reset(&self) -> (u64,u64,u64,u64) {
+        let tl = self.total_logs.swap(0, Ordering::Relaxed);
+        let ta = self.total_alerts.swap(0, Ordering::Relaxed);
+        let aa = self.active_alerts.swap(0, Ordering::Relaxed);
+        let ca = self.critical_alerts.swap(0, Ordering::Relaxed);
+        (tl, ta, aa, ca)
+    }
 }
 
 impl DetectionEngine {
@@ -47,11 +89,39 @@ impl DetectionEngine {
             db,
             response_engine,
             kafka,
+            local_stats: Arc::new(LocalStats::new()),
         };
         
         // Initial rules load
         if let Err(e) = engine.reload_rules().await {
             error!("Failed to load initial rules: {}", e);
+        }
+
+        // Spawn background task to flush local stats to Redis periodically (every 1s).
+        {
+            let redis = engine.redis.clone();
+            let stats = engine.local_stats.clone();
+            tokio::spawn(async move {
+                let flush_interval = tokio::time::Duration::from_secs(1);
+                // expiry for stats in Redis (one week)
+                let expiry = 60 * 60 * 24 * 7;
+                loop {
+                    tokio::time::sleep(flush_interval).await;
+                    let (tl, ta, aa, ca) = stats.take_and_reset();
+                    if tl > 0 {
+                        let _ = redis.incr_by("siem:stats:total_logs", tl, expiry).await;
+                    }
+                    if ta > 0 {
+                        let _ = redis.incr_by("siem:stats:total_alerts", ta, expiry).await;
+                    }
+                    if aa > 0 {
+                        let _ = redis.incr_by("siem:stats:active_alerts", aa, expiry).await;
+                    }
+                    if ca > 0 {
+                        let _ = redis.incr_by("siem:stats:critical_alerts", ca, expiry).await;
+                    }
+                }
+            });
         }
         
         engine
@@ -112,6 +182,8 @@ impl DetectionEngine {
     
     pub async fn process_log(&self, log: Log) {
         let mut alerts_to_process = Vec::new();
+        // Increment local total_logs counter for every processed log (hot path).
+        self.local_stats.incr_log();
         
         // Check each rule concurrently
         {
@@ -159,10 +231,13 @@ impl DetectionEngine {
                 .collect::<Vec<_>>()
                 .await;
 
-            for (rule_name, result) in results.into_iter() {
+                    for (rule_name, result) in results.into_iter() {
                 match result {
                     Ok(Some(alert)) => {
                         warn!("🚨 Rule triggered: {} - {}", rule_name, alert.description);
+                        // Update local counters (hot path) and enqueue the alert for processing
+                        let is_crit = alert.severity == AlertSeverity::Critical;
+                        self.local_stats.incr_alert(is_crit);
                         alerts_to_process.push(alert);
                     }
                     Ok(None) => {}
@@ -179,32 +254,24 @@ impl DetectionEngine {
                 Ok(_) => {
                     // also broadcast lightweight notification for real-time UIs
                     let _ = self.alert_tx.send(alert.clone());
-
-                    // Best-effort: publish lightweight dashboard stats so UIs get an immediate
-                    // update when an alert is enqueued. We read counters from Redis (if
-                    // present) and include rules_loaded for context.
-                    let _rules_count = self.rules.load().values().map(|v| v.len()).sum::<usize>() as i64;
-                    let redis = self.redis.clone();
-                    let stats_tx = self.stats_tx.clone();
-                    tokio::spawn(async move {
-                        let tl: Option<u32> = redis.get_counter("siem:stats:total_logs").await.ok().flatten();
-                        let ta: Option<u32> = redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
-                        let aa: Option<u32> = redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
-                        let ca: Option<u32> = redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
-
-                        let stats = crate::types::DashboardStats {
-                            total_logs: tl.map(|v| v as i64).unwrap_or(0),
-                            total_alerts: ta.map(|v| v as i64).unwrap_or(0),
-                            active_alerts: aa.map(|v| v as i64).unwrap_or(0),
-                            critical_alerts: ca.map(|v| v as i64).unwrap_or(0),
-                        };
-
-                        // attach rules_loaded in the same broadcast by using total_logs field
-                        // as the primary numeric; the dashboard consumers can also call
-                        // get_stats() for richer info. We still include rules count via logs
-                        // field where appropriate (keeps message shape stable).
-                        let _ = stats_tx.send(stats);
-                    });
+                            // Best-effort: publish lightweight dashboard stats so UIs get an immediate
+                            // update when an alert is enqueued. Use local aggregated counters (no
+                            // Redis roundtrips) for low-latency dashboards.
+                            let stats_tx = self.stats_tx.clone();
+                            let _rules_loaded = self.rules.load().values().map(|v| v.len()).sum::<usize>() as i64;
+                            let snapshot = {
+                                let tl = self.local_stats.total_logs.load(Ordering::Relaxed) as i64;
+                                let ta = self.local_stats.total_alerts.load(Ordering::Relaxed) as i64;
+                                let aa = self.local_stats.active_alerts.load(Ordering::Relaxed) as i64;
+                                let ca = self.local_stats.critical_alerts.load(Ordering::Relaxed) as i64;
+                                crate::types::DashboardStats {
+                                    total_logs: tl,
+                                    total_alerts: ta,
+                                    active_alerts: aa,
+                                    critical_alerts: ca,
+                                }
+                            };
+                            let _ = stats_tx.send(snapshot);
                 }
                 Err(e) => {
                     error!("Failed to enqueue alert to Kafka: {}. Falling back to immediate processing.", e);
