@@ -1,0 +1,44 @@
+{
+  "annotations":{
+    "list":[]
+  },
+  "panels":[
+    {
+      "type":"graph",
+      "title":"Processing latency (histogram)",
+      "targets":[
+        { "expr": "histogram_quantile(0.5, sum(rate(siem_processing_latency_seconds_bucket[5m])) by (le))", "legendFormat":"p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(siem_processing_latency_seconds_bucket[5m])) by (le))", "legendFormat":"p95" }
+      ]
+    },
+    {
+      "type":"graph",
+      "title":"Rule execution time (p95)",
+      "targets":[
+        { "expr": "histogram_quantile(0.95, sum(rate(siem_rule_execution_seconds_bucket[5m])) by (le, rule))", "legendFormat":"{{rule}}" }
+      ]
+    },
+    {
+      "type":"graph",
+      "title":"Kafka partition lag",
+      "targets":[
+        { "expr": "sum(siem_kafka_partition_lag) by (topic)", "legendFormat":"{{topic}}" }
+      ]
+    },
+    {
+      "type":"stat",
+      "title":"Alerts sent to DLQ",
+      "targets":[
+        { "expr": "sum(siem_alerts_dlq_total)", "legendFormat":"DLQ" }
+      ]
+    },
+    {
+      "type":"stat",
+      "title":"Kafka send retries",
+      "targets":[
+        { "expr": "sum(siem_kafka_send_retries_total)", "legendFormat":"retries" }
+      ]
+    }
+  ],
+  "title":"Mini-SIEM Overview"
+}

@@ -3,9 +3,6 @@ use tokio::{signal, task, sync::{broadcast, mpsc}};
 use tracing::{info, error};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use metrics_exporter_prometheus::PrometheusBuilder;
-use metrics::{gauge, register_gauge};
-
 use mini_siem::db::PostgresDb;
 use mini_siem::db::redis::RedisCache;
 use mini_siem::db::cache::Cache;
@@ -126,20 +123,10 @@ async fn main() -> anyhow::Result<()> {
     let log_tx_clone = log_tx.clone();
     let mut kafka_shutdown_rx = shutdown_tx.subscribe();
     let log_channel_full_counter = std::sync::Arc::new(AtomicUsize::new(0));
-    // Start Prometheus metrics exporter (optional)
-    match cfg.metrics_bind.parse::<std::net::SocketAddr>() {
-        Ok(addr) => {
-            if let Err(e) = PrometheusBuilder::new().with_http_listener(addr).install() {
-                error!("failed to install Prometheus recorder: {}", e);
-            }
-        }
-        Err(e) => {
-            error!("invalid METRICS_BIND address {}: {}", cfg.metrics_bind, e);
-        }
+    // Start Prometheus exporter and monitoring
+    if let Err(e) = mini_siem::monitoring::init_metrics(&cfg.metrics_bind) {
+        error!("failed to start metrics exporter: {}", e);
     }
-
-    // Register a gauge metric for dropped logs
-    register_gauge!("siem_log_channel_drops");
 
     // Spawn a task to periodically update the Prometheus gauge from the atomic counter
     let metrics_counter = log_channel_full_counter.clone();
@@ -148,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             let val = metrics_counter.load(std::sync::atomic::Ordering::Relaxed) as f64;
-            gauge!("siem_log_channel_drops", val);
+            metrics::gauge!("siem_log_channel_drops", val);
         }
     });
     let kafka_handle = {

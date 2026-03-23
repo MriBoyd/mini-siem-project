@@ -137,6 +137,7 @@ impl KafkaQueue {
                 Ok((_p, _o)) => return Ok(()),
                 Err((e, _)) => {
                     tracing::warn!("kafka send attempt {} failed: {:?}", attempt, e);
+                    metrics::counter!("siem_kafka_send_retries_total", 1);
                     if attempt > retries {
                         // last resort: publish to DLQ topic if provided
                         if let Some(dt) = dlq_topic {
@@ -146,6 +147,7 @@ impl KafkaQueue {
                             match self.producer.send(dlq_record, Timeout::After(Duration::from_secs(5))).await {
                                 Ok((_p2, _o2)) => {
                                     tracing::info!("alert sent to DLQ topic {}", dt);
+                                    metrics::counter!("siem_alerts_dlq_total", 1);
                                     return Ok(());
                                 }
                                 Err((e2, _)) => {
