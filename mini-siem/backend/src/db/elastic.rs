@@ -46,8 +46,9 @@ impl ElasticClient {
         if res.status().is_success() {
             Ok(())
         } else {
+            let status = res.status();
             let txt = res.text().await.unwrap_or_default();
-            Err(anyhow::anyhow!("failed to index log: {} - {}", res.status(), txt))
+            Err(anyhow::anyhow!("failed to index log: {} - {}", status, txt))
         }
     }
 
@@ -80,8 +81,9 @@ impl ElasticClient {
             }
             Ok(())
         } else {
+            let status = res.status();
             let txt = res.text().await.unwrap_or_default();
-            Err(anyhow::anyhow!("bulk index failed: {} - {}", res.status(), txt))
+            Err(anyhow::anyhow!("bulk index failed: {} - {}", status, txt))
         }
     }
 
@@ -95,8 +97,9 @@ impl ElasticClient {
             let v: Value = res.json().await?;
             Ok(v)
         } else {
+            let status = res.status();
             let txt = res.text().await.unwrap_or_default();
-            Err(anyhow::anyhow!("search failed: {} - {}", res.status(), txt))
+            Err(anyhow::anyhow!("search failed: {} - {}", status, txt))
         }
     }
 
@@ -107,8 +110,9 @@ impl ElasticClient {
         if res.status().is_success() || res.status().as_u16() == 404 {
             Ok(())
         } else {
+            let status = res.status();
             let txt = res.text().await.unwrap_or_default();
-            Err(anyhow::anyhow!("delete index failed: {} - {}", res.status(), txt))
+            Err(anyhow::anyhow!("delete index failed: {} - {}", status, txt))
         }
     }
 }
