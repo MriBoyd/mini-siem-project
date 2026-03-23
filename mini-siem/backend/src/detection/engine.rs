@@ -1,4 +1,4 @@
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn, error};
 use std::sync::Arc;
 use arc_swap::ArcSwap;
@@ -29,6 +29,8 @@ use super::rules::{
     kafka: Arc<KafkaQueue>,
     // Local in-memory aggregated stats to avoid Redis roundtrips on every alert/log
     local_stats: Arc<LocalStats>,
+    // notify channel to avoid spawning tasks per-alert for stats broadcasting
+    stats_notify_tx: mpsc::Sender<()>,
 }
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,6 +83,9 @@ impl DetectionEngine {
         response_engine: Arc<ResponseEngine>,
         kafka: Arc<KafkaQueue>,
     ) -> Self {
+        // create stats notify channel
+        let (stats_notify_tx, stats_notify_rx) = mpsc::channel::<()>(1024);
+
         let engine = Self {
             rules: ArcSwap::from_pointee(HashMap::new()),
             alert_tx,
@@ -90,6 +95,7 @@ impl DetectionEngine {
             response_engine,
             kafka,
             local_stats: Arc::new(LocalStats::new()),
+            stats_notify_tx,
         };
         
         // Initial rules load
@@ -120,6 +126,49 @@ impl DetectionEngine {
                     if ca > 0 {
                         let _ = redis.incr_by("siem:stats:critical_alerts", ca, expiry).await;
                     }
+                }
+            });
+        }
+
+        // Spawn a dedicated stats worker that listens for notifications from the hot path
+        // and broadcasts a coalesced DashboardStats update to `stats_tx`.
+        {
+            let stats = engine.local_stats.clone();
+            let stats_tx = engine.stats_tx.clone();
+            tokio::spawn(async move {
+                let mut rx = stats_notify_rx;
+                loop {
+                    // Wait for at least one notification
+                    if rx.recv().await.is_none() {
+                        // channel closed
+                        break;
+                    }
+
+                    // Coalesce events for up to 100ms to avoid spamming broadcasts
+                    let coalesce = tokio::time::sleep(tokio::time::Duration::from_millis(100));
+                    tokio::pin!(coalesce);
+                    tokio::select! {
+                        _ = &mut coalesce => {},
+                        _ = rx.recv() => {
+                            // drained one more, continue waiting until timeout
+                            let _ = tokio::time::sleep(tokio::time::Duration::from_millis(0)).await;
+                        }
+                    }
+
+                    // Take a snapshot from local stats and broadcast
+                    let tl = stats.total_logs.load(Ordering::Relaxed) as i64;
+                    let ta = stats.total_alerts.load(Ordering::Relaxed) as i64;
+                    let aa = stats.active_alerts.load(Ordering::Relaxed) as i64;
+                    let ca = stats.critical_alerts.load(Ordering::Relaxed) as i64;
+
+                    let snapshot = crate::types::DashboardStats {
+                        total_logs: tl,
+                        total_alerts: ta,
+                        active_alerts: aa,
+                        critical_alerts: ca,
+                    };
+
+                    let _ = stats_tx.send(snapshot);
                 }
             });
         }
@@ -257,21 +306,8 @@ impl DetectionEngine {
                             // Best-effort: publish lightweight dashboard stats so UIs get an immediate
                             // update when an alert is enqueued. Use local aggregated counters (no
                             // Redis roundtrips) for low-latency dashboards.
-                            let stats_tx = self.stats_tx.clone();
-                            let _rules_loaded = self.rules.load().values().map(|v| v.len()).sum::<usize>() as i64;
-                            let snapshot = {
-                                let tl = self.local_stats.total_logs.load(Ordering::Relaxed) as i64;
-                                let ta = self.local_stats.total_alerts.load(Ordering::Relaxed) as i64;
-                                let aa = self.local_stats.active_alerts.load(Ordering::Relaxed) as i64;
-                                let ca = self.local_stats.critical_alerts.load(Ordering::Relaxed) as i64;
-                                crate::types::DashboardStats {
-                                    total_logs: tl,
-                                    total_alerts: ta,
-                                    active_alerts: aa,
-                                    critical_alerts: ca,
-                                }
-                            };
-                            let _ = stats_tx.send(snapshot);
+                            // Notify the stats worker (non-blocking) to broadcast a coalesced update.
+                            let _ = self.stats_notify_tx.try_send(());
                 }
                 Err(e) => {
                     error!("Failed to enqueue alert to Kafka: {}. Falling back to immediate processing.", e);
