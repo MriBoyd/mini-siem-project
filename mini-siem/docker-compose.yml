@@ -40,12 +40,42 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Default retention for logs topic (ms) - 7 days
+      KAFKA_LOG_RETENTION_MS: 604800000
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     healthcheck:
       test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
       interval: 30s
       timeout: 10s
       retries: 5
+
+  # Elasticsearch for log indexing (single-node dev config)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS http://localhost:9200/_cluster/health | grep -q '\"status\"' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-time job to create topics and set per-topic retention (siem-logs and DLQ)
+  kafka-setup:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      until kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1; do echo waiting for kafka; sleep 1; done;
+      kafka-topics --bootstrap-server kafka:9092 --create --topic siem-logs --partitions 3 --replication-factor 1 --if-not-exists --config retention.ms=604800000 || true;
+      kafka-topics --bootstrap-server kafka:9092 --create --topic siem-logs-dlq --partitions 3 --replication-factor 1 --if-not-exists --config retention.ms=1209600000 || true;
+      echo done;
+    restart: "no"
 
 
 
