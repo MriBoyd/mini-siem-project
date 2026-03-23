@@ -28,10 +28,15 @@ impl CompiledRule {
     }
 
     pub async fn evaluate(&self, log: &Log) -> Result<Option<Alert>> {
-        match self {
+        // Time rule execution and export to metrics
+        let start = std::time::Instant::now();
+        let res = match self {
             CompiledRule::BruteForce(r) => r.evaluate(log).await,
             CompiledRule::PortScan(r) => r.evaluate(log).await,
             CompiledRule::Malware(r) => r.evaluate(log).await,
-        }
+        };
+        let dur = start.elapsed().as_secs_f64();
+        metrics::histogram!("siem_rule_execution_seconds", dur, "rule" => self.name());
+        res
     }
 }

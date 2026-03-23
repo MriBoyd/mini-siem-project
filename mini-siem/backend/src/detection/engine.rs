@@ -238,6 +238,8 @@ impl DetectionEngine {
         
         // Check each rule concurrently
         {
+            // start processing timer
+            let proc_start = std::time::Instant::now();
             // Determine relevant rule types/tags for this log to avoid evaluating all rules.
             let rules_map = self.rules.load();
             let mut candidate_rules: SmallVec<[Arc<CompiledRule>; 8]> = SmallVec::new();
@@ -297,6 +299,8 @@ impl DetectionEngine {
                     }
                 }
             }
+            let proc_dur = proc_start.elapsed().as_secs_f64();
+            metrics::histogram!("siem_processing_latency_seconds", proc_dur);
         }
         
         // Handle alerts: enqueue to Kafka for async processing by workers.

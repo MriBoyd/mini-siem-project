@@ -7,3 +7,4 @@ pub mod queue;
 pub mod config;
 pub mod auth;
 pub mod response;
+pub mod monitoring;

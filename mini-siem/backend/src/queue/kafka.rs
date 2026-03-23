@@ -9,6 +9,7 @@ use rdkafka::util::Timeout;
 use serde_json;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
+use metrics;
 
 use crate::types::Log;
 use std::sync::Arc;
@@ -172,6 +173,21 @@ impl KafkaQueue {
         while let Some(message) = stream.next().await {
             match message {
                 Ok(msg) => {
+                    // Observe consumer offset and partition highwater (if available).
+                    let topic = msg.topic().to_string();
+                    let partition = msg.partition();
+                    let offset = msg.offset();
+                    metrics::gauge!("siem_kafka_partition_consumer_offset", offset as f64, "topic" => topic.clone(), "partition" => partition.to_string());
+                    // try to fetch highwater mark for this partition
+                    match self.consumer.fetch_watermarks(&topic, partition, Timeout::After(Duration::from_millis(500))) {
+                        Ok((_low, high)) => {
+                            metrics::gauge!("siem_kafka_partition_highwater_offset", high as f64, "topic" => topic.clone(), "partition" => partition.to_string());
+                            // kafka lag can be derived as high - offset
+                            let lag = if high >= offset { (high - offset) as f64 } else { 0.0 };
+                            metrics::gauge!("siem_kafka_partition_lag", lag, "topic" => topic.clone(), "partition" => partition.to_string());
+                        }
+                        Err(_) => {}
+                    }
                     if let Some(Ok(payload)) = msg.payload_view::<str>() {
                         if let Ok(log) = serde_json::from_str::<Log>(payload) {
                             // Use try_send to avoid blocking the kafka stream when the
