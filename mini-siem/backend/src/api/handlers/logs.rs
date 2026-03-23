@@ -50,10 +50,9 @@ pub async fn ingest_log(
         received_at: now,
     };
     
-    // Persist into the database (logs table)
-    if let Err(e) = state.db.create_log(&log).await {
-        warn!("Failed to persist log: {}", e);
-    }
+    // Do NOT persist raw logs into Postgres here. Postgres is the source of
+    // truth for alerts/config; logs are indexed in Elasticsearch via the
+    // separate indexer pipeline (Kafka -> indexer -> Elasticsearch).
 
     // Try to enqueue into in-memory queue for downstream processing. If the queue
     // is full, return `429 Too Many Requests` to signal backpressure.
@@ -146,9 +145,8 @@ pub async fn ingest_batch(
             received_at: now,
         };
 
-        if let Err(e) = state.db.create_log(&log).await {
-            warn!("Failed to persist log: {}", e);
-        }
+        // We intentionally do not persist raw logs to Postgres in the batch
+        // ingest path. Logs are routed through Kafka and indexed into ES.
         let arc_log = Arc::new(log.clone());
         match state.log_tx.try_send(arc_log.clone()) {
             Ok(_) => {
