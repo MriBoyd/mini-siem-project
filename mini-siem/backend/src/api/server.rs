@@ -16,7 +16,7 @@ pub struct AppState {
     pub db: Arc<PostgresDb>,
     pub redis: RedisCache,
     pub kafka: Arc<KafkaQueue>,
-    pub log_tx: mpsc::Sender<Log>,
+    pub log_tx: mpsc::Sender<std::sync::Arc<Log>>,
     pub alert_tx: broadcast::Sender<Alert>,
     pub stats_tx: broadcast::Sender<crate::types::DashboardStats>,
 }

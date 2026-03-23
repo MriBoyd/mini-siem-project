@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Create channels
-    let (log_tx, mut log_rx) = mpsc::channel::<types::Log>(10000);
+    let (log_tx, mut log_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
     let (alert_tx, mut _alert_rx_old) = broadcast::channel::<types::Alert>(1000);
     // Broadcast channel for aggregated dashboard stats
     let (stats_tx, mut _stats_rx_old) = broadcast::channel::<types::DashboardStats>(100);
@@ -215,7 +215,7 @@ async fn main() -> anyhow::Result<()> {
     info!("📡 API: http://{}", cfg.api_bind);
     info!("📊 Kafka: {}", kafka_brokers);
     info!("💾 PostgreSQL: connected");
-    info!("🗄️  Redis: connected");
+    info!("🗄️ Redis: connected");
     info!("📢 Slack: {}", if slack_url_copy.is_some() { "enabled" } else { "disabled" });
     info!("🔄 Go Agent integration: ready");
     info!("🤖 SOAR Engine: active");

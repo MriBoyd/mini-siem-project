@@ -173,7 +173,7 @@ impl KafkaQueue {
 
     /// Consume from Kafka and forward logs into the provided `tx`.
     /// `full_counter` is incremented when the channel is full (monitoring aid).
-    pub async fn consume_logs(&self, tx: mpsc::Sender<Log>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
+    pub async fn consume_logs(&self, tx: mpsc::Sender<std::sync::Arc<Log>>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
         let mut stream = self.consumer.stream();
 
         while let Some(message) = stream.next().await {
@@ -194,8 +194,8 @@ impl KafkaQueue {
                         }
                         Err(_) => {}
                     }
-                    if let Some(Ok(payload)) = msg.payload_view::<str>() {
-                            if let Ok(log) = serde_json::from_str::<Log>(payload) {
+                        if let Some(payload) = msg.payload() {
+                            if let Ok(log) = serde_json::from_slice::<Log>(payload) {
                                 // Centralized Redis sliding-window rate limiter per IP
                                 let source_ip = log.source_ip.clone();
                                 let rl_key = format!("siem:ratelimit:ip:{}", source_ip);
@@ -223,9 +223,9 @@ impl KafkaQueue {
                                 if !allowed {
                                     continue;
                                 }
-                            // Use try_send to avoid blocking the kafka stream when the
-                            // downstream channel is full. If full, increment counter and drop.
-                            match tx.try_send(log) {
+                                // Send Arc<Log> (cheap clone of pointer) to downstream processor.
+                                let arc_log = std::sync::Arc::new(log);
+                                match tx.try_send(arc_log) {
                                 Ok(_) => {
                                     if let Some(cnt) = full_counter.as_ref() {
                                         cnt.store(0, Ordering::Relaxed);

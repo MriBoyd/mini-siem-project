@@ -2,7 +2,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn, error};
 use std::sync::Arc;
 use arc_swap::ArcSwap;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use futures_util::stream::{self, StreamExt};
 use smallvec::SmallVec;
 
@@ -87,7 +87,7 @@ impl DetectionEngine {
         let (stats_notify_tx, stats_notify_rx) = mpsc::channel::<()>(1024);
 
         let engine = Self {
-            rules: ArcSwap::from_pointee(HashMap::new()),
+            rules: ArcSwap::from_pointee(HashMap::default()),
             alert_tx,
             stats_tx,
             redis,
@@ -178,7 +178,7 @@ impl DetectionEngine {
 
     pub async fn reload_rules(&self) -> anyhow::Result<()> {
         let db_rules = self.db.get_enabled_rules().await?;
-        let mut new_rules: HashMap<LogTag, Vec<Arc<CompiledRule>>> = HashMap::new();
+        let mut new_rules: HashMap<LogTag, Vec<Arc<CompiledRule>>> = HashMap::default();
 
         for dr in db_rules {
             match dr.rule_type.as_str() {
@@ -231,7 +231,7 @@ impl DetectionEngine {
         Ok(())
     }
     
-    pub async fn process_log(&self, log: Log) {
+    pub async fn process_log(&self, log: Arc<Log>) {
         let mut alerts_to_process = Vec::new();
         // Increment local total_logs counter for every processed log (hot path).
         self.local_stats.incr_log();
@@ -275,8 +275,8 @@ impl DetectionEngine {
             for rule in candidate_rules.iter() {
                 let name = rule.name();
                 let rule_arc = rule.clone();
-                let log_clone = log.clone();
-                eval_futures.push(async move { (name, rule_arc.evaluate(&log_clone).await) });
+                let log_arc = log.clone();
+                eval_futures.push(async move { (name, rule_arc.evaluate(&*log_arc).await) });
             }
 
             let results = stream::iter(eval_futures)

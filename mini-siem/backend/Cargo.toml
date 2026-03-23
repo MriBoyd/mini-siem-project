@@ -66,6 +66,9 @@ arc-swap = "1.6"
 # In-memory L1 cache for hot-path Redis reads
 dashmap = "5.4"
 
+# faster hashmap for hot paths
+rustc-hash = "1.1"
+
 # metrics and monitoring
 prometheus = { version = "0.13", features = ["process"] }
 metrics = "0.21"
