@@ -11,6 +11,9 @@ pub struct Config {
     pub metrics_bind: String,
     pub kafka_pause_on_full: bool,
     pub kafka_pause_timeout_ms: u64,
+    pub rate_limit_per_ip: usize,
+    pub rate_limit_window_ms: u64,
+    pub rate_limit_sample_rate: u32,
 }
 
 impl Config {
@@ -29,6 +32,15 @@ impl Config {
         let kafka_pause_timeout_ms = env::var("KAFKA_PAUSE_TIMEOUT_MS").ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(5000);
+        let rate_limit_per_ip = env::var("RATE_LIMIT_PER_IP").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let rate_limit_window_ms = env::var("RATE_LIMIT_WINDOW_MS").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
+        let rate_limit_sample_rate = env::var("RATE_LIMIT_SAMPLE_RATE").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
 
         Ok(Self {
             database_url,
@@ -39,6 +51,9 @@ impl Config {
             metrics_bind,
             kafka_pause_on_full,
             kafka_pause_timeout_ms,
+            rate_limit_per_ip,
+            rate_limit_window_ms,
+            rate_limit_sample_rate,
         })
     }
 }
