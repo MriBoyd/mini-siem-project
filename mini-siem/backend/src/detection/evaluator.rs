@@ -1,4 +1,5 @@
 use crate::types::Log;
+use crate::utils::normalization::normalize_log;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,7 +23,16 @@ impl RuleCondition {
             RuleCondition::Any(conditions) => conditions.iter().any(|c| c.evaluate(log)),
             RuleCondition::Not(condition) => !condition.evaluate(log),
             RuleCondition::Field { field, op, value } => {
+                // First try ECS fields (normalized)
+                let ecs = normalize_log(log);
                 let log_value = match field.as_str() {
+                    // ECS mapping
+                    "user.name" => ecs.user_name.map(Value::String).unwrap_or(Value::Null),
+                    "source.ip" => ecs.source_ip.map(Value::String).unwrap_or(Value::Null),
+                    "event.outcome" => ecs.event_outcome.map(Value::String).unwrap_or(Value::Null),
+                    "log.level" => ecs.log_level.map(Value::String).unwrap_or(Value::Null),
+                    
+                    // Fallback to original fields
                     "event_type" => Value::String(log.event_type.clone()),
                     "source_ip" => Value::String(log.source_ip.clone()),
                     "target_user" => log.target_user.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null),
@@ -40,6 +50,7 @@ impl RuleCondition {
                     "!=" | "ne" => &log_value != value,
                     "contains" => {
                         if let (Some(l_str), Some(v_str)) = (log_value.as_str(), value.as_str()) {
+                            let l_str: &str = l_str;
                             l_str.contains(v_str)
                         } else {
                             false
@@ -47,6 +58,7 @@ impl RuleCondition {
                     }
                     "startswith" => {
                         if let (Some(l_str), Some(v_str)) = (log_value.as_str(), value.as_str()) {
+                            let l_str: &str = l_str;
                             l_str.starts_with(v_str)
                         } else {
                             false
@@ -54,6 +66,7 @@ impl RuleCondition {
                     }
                     "endswith" => {
                         if let (Some(l_str), Some(v_str)) = (log_value.as_str(), value.as_str()) {
+                            let l_str: &str = l_str;
                             l_str.ends_with(v_str)
                         } else {
                             false
