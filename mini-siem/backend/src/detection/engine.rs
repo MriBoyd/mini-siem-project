@@ -320,11 +320,14 @@ impl DetectionEngine {
                     // record fallback to DB
                     metrics::counter!("siem_alerts_fallback_db_total", 1);
                     error!("Failed to enqueue alert to Kafka after retries: {}. Falling back to immediate processing.", e);
-                    // Fallback: persist immediately and trigger response engine to avoid data loss
-                    if let Err(e) = self.db.create_alert(&alert).await {
-                        error!("Failed to save alert to database: {}", e);
+                    // Fallback: persist, notify and trigger response engine via central alert manager
+                    if let Err(e) = crate::alerting::manager::handle_alert(
+                        self.db.clone(),
+                        self.response_engine.clone(),
+                        &alert,
+                    ).await {
+                        error!("Failed to handle alert: {}", e);
                     }
-                    self.response_engine.handle_alert(&alert).await;
                     if self.alert_tx.send(alert.clone()).is_err() {
                         warn!("Alert channel closed");
                     }

@@ -29,6 +29,7 @@ pub const LOGS_DLQ_TOPIC: &str = "siem-logs-dlq";
 pub struct KafkaQueue {
     producer: FutureProducer,
     consumer: StreamConsumer,
+    alert_consumer: StreamConsumer,
     topic: String,
 }
 
@@ -60,15 +61,31 @@ impl KafkaQueue {
 
                     match cons_cfg.create::<StreamConsumer>() {
                         Ok(consumer) => {
+                            // Create a second consumer for alerts to avoid polling the
+                            // same StreamConsumer from multiple tasks concurrently.
+                            // First consumer will subscribe to logs only.
                             if let Err(e) = consumer.subscribe(&[DEFAULT_TOPIC]) {
                                 tracing::warn!("failed to subscribe to topic {}: {}", DEFAULT_TOPIC, e);
                             }
 
-                            return Ok(KafkaQueue {
-                                producer,
-                                consumer,
-                                topic: DEFAULT_TOPIC.to_string(),
-                            });
+                            // Create alert-specific consumer
+                            match cons_cfg.create::<StreamConsumer>() {
+                                Ok(alert_consumer) => {
+                                    if let Err(e) = alert_consumer.subscribe(&[ALERTS_TOPIC]) {
+                                        tracing::warn!("failed to subscribe alert consumer to {}: {}", ALERTS_TOPIC, e);
+                                    }
+
+                                    return Ok(KafkaQueue {
+                                        producer,
+                                        consumer,
+                                        alert_consumer,
+                                        topic: DEFAULT_TOPIC.to_string(),
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::warn!("attempt {}: failed to create Kafka alert consumer: {}", attempt, e);
+                                }
+                            }
                         }
                         Err(e) => {
                             tracing::warn!("attempt {}: failed to create Kafka consumer: {}", attempt, e);
@@ -315,7 +332,7 @@ impl KafkaQueue {
 
     /// Consume alerts from Kafka and forward into the provided `tx` for processing.
     pub async fn consume_alerts(&self, tx: mpsc::Sender<crate::types::Alert>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64) -> Result<()> {
-        let mut stream = self.consumer.stream();
+        let mut stream = self.alert_consumer.stream();
 
         while let Some(message) = stream.next().await {
             match message {
