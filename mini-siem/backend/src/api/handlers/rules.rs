@@ -74,6 +74,7 @@ pub async fn toggle_rule(
                 severity: None,
                 threshold: None,
                 window_seconds: None,
+                condition: None,
                 is_enabled: Some(!rule.is_enabled),
             };
             match state.db.update_rule(id, update).await {

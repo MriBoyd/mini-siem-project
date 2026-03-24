@@ -16,7 +16,9 @@ use super::rules::{
     brute_force::BruteForceRule,
     port_scan::PortScanRule,
     malware::MalwareDetectionRule,
+    generic::GenericRule,
 };
+use crate::detection::evaluator::RuleCondition;
 
     pub struct DetectionEngine {
     // Map of log_type/tag -> list of precompiled rules (lock-free reads)
@@ -217,6 +219,27 @@ impl DetectionEngine {
                     let compiled = Arc::new(CompiledRule::Malware(concrete));
                     for lt in compiled.log_types() {
                         new_rules.entry(lt).or_default().push(compiled.clone());
+                    }
+                }
+                "generic" => {
+                    if let Some(condition_val) = dr.condition {
+                        match serde_json::from_value::<RuleCondition>(condition_val) {
+                            Ok(condition) => {
+                                let concrete = GenericRule::new(
+                                    dr.id.to_string(),
+                                    dr.name,
+                                    dr.severity,
+                                    condition,
+                                );
+                                let compiled = Arc::new(CompiledRule::Generic(concrete));
+                                for lt in compiled.log_types() {
+                                    new_rules.entry(lt).or_default().push(compiled.clone());
+                                }
+                            }
+                            Err(e) => error!("Failed to parse condition for generic rule {}: {}", dr.name, e),
+                        }
+                    } else {
+                        warn!("Generic rule {} has no condition", dr.name);
                     }
                 }
                 _ => warn!("Unknown rule type: {}", dr.rule_type),

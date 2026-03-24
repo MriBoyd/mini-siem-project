@@ -12,6 +12,7 @@ pub struct DetectionRule {
     pub severity: String,
     pub threshold: Option<i32>,
     pub window_seconds: Option<i32>,
+    pub condition: Option<serde_json::Value>,
     pub is_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -25,6 +26,7 @@ pub struct RuleCreate {
     pub severity: String,
     pub threshold: Option<i32>,
     pub window_seconds: Option<i32>,
+    pub condition: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,5 +36,6 @@ pub struct RuleUpdate {
     pub severity: Option<String>,
     pub threshold: Option<i32>,
     pub window_seconds: Option<i32>,
+    pub condition: Option<serde_json::Value>,
     pub is_enabled: Option<bool>,
 }

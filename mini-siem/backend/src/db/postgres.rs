@@ -424,7 +424,7 @@ impl PostgresDb {
     // Rules management
     pub async fn get_all_rules(&self) -> Result<Vec<DetectionRule>> {
         let rules = sqlx::query_as::<_, DetectionRule>(
-            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at FROM detection_rules"
+            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, condition, is_enabled, created_at, updated_at FROM detection_rules"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -433,7 +433,7 @@ impl PostgresDb {
 
     pub async fn get_enabled_rules(&self) -> Result<Vec<DetectionRule>> {
         let rules = sqlx::query_as::<_, DetectionRule>(
-            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at FROM detection_rules WHERE is_enabled = true"
+            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, condition, is_enabled, created_at, updated_at FROM detection_rules WHERE is_enabled = true"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -443,9 +443,9 @@ impl PostgresDb {
     pub async fn create_rule(&self, rule: &RuleCreate) -> Result<DetectionRule> {
         let record = sqlx::query_as::<_, DetectionRule>(
             r#"
-            INSERT INTO detection_rules (name, description, rule_type, severity, threshold, window_seconds)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at
+            INSERT INTO detection_rules (name, description, rule_type, severity, threshold, window_seconds, condition)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, name, description, rule_type, severity, threshold, window_seconds, condition, is_enabled, created_at, updated_at
             "#
         )
         .bind(&rule.name)
@@ -454,6 +454,7 @@ impl PostgresDb {
         .bind(&rule.severity)
         .bind(rule.threshold)
         .bind(rule.window_seconds)
+        .bind(&rule.condition)
         .fetch_one(&self.pool)
         .await?;
         Ok(record)
@@ -461,7 +462,7 @@ impl PostgresDb {
 
     pub async fn get_rule_by_id(&self, id: Uuid) -> Result<Option<DetectionRule>> {
         let rule = sqlx::query_as::<_, DetectionRule>(
-            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at FROM detection_rules WHERE id = $1"
+            "SELECT id, name, description, rule_type, severity, threshold, window_seconds, condition, is_enabled, created_at, updated_at FROM detection_rules WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -477,14 +478,15 @@ impl PostgresDb {
         let severity = update.severity.unwrap_or(existing.severity);
         let threshold = update.threshold.or(existing.threshold);
         let window_seconds = update.window_seconds.or(existing.window_seconds);
+        let condition = update.condition.or(existing.condition);
         let is_enabled = update.is_enabled.unwrap_or(existing.is_enabled);
 
         let record = sqlx::query_as::<_, DetectionRule>(
             r#"
             UPDATE detection_rules 
-            SET name = $1, description = $2, severity = $3, threshold = $4, window_seconds = $5, is_enabled = $6, updated_at = NOW()
-            WHERE id = $7
-            RETURNING id, name, description, rule_type, severity, threshold, window_seconds, is_enabled, created_at, updated_at
+            SET name = $1, description = $2, severity = $3, threshold = $4, window_seconds = $5, condition = $6, is_enabled = $7, updated_at = NOW()
+            WHERE id = $8
+            RETURNING id, name, description, rule_type, severity, threshold, window_seconds, condition, is_enabled, created_at, updated_at
             "#
         )
         .bind(name)
@@ -492,6 +494,7 @@ impl PostgresDb {
         .bind(severity)
         .bind(threshold)
         .bind(window_seconds)
+        .bind(condition)
         .bind(is_enabled)
         .bind(id)
         .fetch_one(&self.pool)
