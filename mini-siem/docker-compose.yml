@@ -77,6 +77,33 @@ services:
       echo done;
     restart: "no"
 
+  # One-time job to create Elasticsearch index with @timestamp mapping
+  es-setup:
+    image: curlimages/curl:latest
+    depends_on:
+      - elasticsearch
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      until curl -sS http://elasticsearch:9200/_cluster/health | grep -q '"status"'; do echo waiting for elasticsearch; sleep 1; done;
+      cat > /tmp/index.json <<'EOF'
+      {
+        "settings": {
+          "number_of_shards": 1,
+          "number_of_replicas": 0
+        },
+        "mappings": {
+          "properties": {
+            "@timestamp": { "type": "date" },
+            "timestamp": { "type": "date" }
+          }
+        }
+      }
+      EOF
+      # create index if missing; ignore errors if it already exists
+      curl -sS -X PUT "http://elasticsearch:9200/mini-siem-logs" -H 'Content-Type: application/json' --data-binary @/tmp/index.json || true;
+      echo "es index setup complete";
+    restart: "no"
+
 
 
 volumes:

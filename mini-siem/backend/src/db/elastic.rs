@@ -41,7 +41,11 @@ impl ElasticClient {
     /// Index a single log document into the given index name. Uses the log's UUID as the doc id.
     pub async fn index_log(&self, index: &str, log: &Log) -> Result<()> {
         let url = format!("{}/{}/_doc/{}?refresh=false", self.base_url, index, log.id);
-        let body = serde_json::to_value(log)?;
+        // Serialize the log and add an `@timestamp` field for Kibana/ES compatibility.
+        let mut body = serde_json::to_value(log)?;
+        if let Value::Object(map) = &mut body {
+            map.insert("@timestamp".to_string(), serde_json::json!(log.timestamp.to_rfc3339()));
+        }
         let res = self.client.post(&url).json(&body).send().await?;
         if res.status().is_success() {
             Ok(())
@@ -64,7 +68,12 @@ impl ElasticClient {
             let meta = serde_json::json!({ "index": { "_id": l.id.to_string() } });
             payload.push_str(&serde_json::to_string(&meta)?);
             payload.push('\n');
-            payload.push_str(&serde_json::to_string(&l)?);
+            // Serialize and inject `@timestamp` for consistency with mappings
+            let mut doc = serde_json::to_value(&l)?;
+            if let Value::Object(map) = &mut doc {
+                map.insert("@timestamp".to_string(), serde_json::json!(l.timestamp.to_rfc3339()));
+            }
+            payload.push_str(&serde_json::to_string(&doc)?);
             payload.push('\n');
         }
 

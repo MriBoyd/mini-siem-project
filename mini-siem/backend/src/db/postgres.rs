@@ -136,28 +136,11 @@ impl PostgresDb {
     }
 
     pub async fn create_log(&self, log: &Log) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO logs (
-                id, timestamp, event_type, source_ip, target_user, service,
-                message, severity, metadata, received_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            "#,
-        )
-        .bind(log.id)
-        .bind(log.timestamp)
-        .bind(&log.event_type)
-        .bind(&log.source_ip)
-        .bind(&log.target_user)
-        .bind(&log.service)
-        .bind(&log.message)
-        .bind(log.severity.to_string())
-        .bind(&log.metadata)
-        .bind(log.received_at)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
+        // Raw log persistence has been moved to Elasticsearch. This
+        // function was intentionally removed to avoid inserting logs
+        // into Postgres. If code still calls this, return an error to
+        // surface the callsite during testing.
+        Err(anyhow::anyhow!("create_log removed: logs are indexed in Elasticsearch"))
     }
     
     pub async fn update_alert(&self, alert: &Alert, redis: Option<RedisCache>) -> Result<()> {
@@ -360,24 +343,17 @@ impl PostgresDb {
     }
 
     pub async fn get_stats(&self) -> Result<(i64, i64, i64, i64)> {
-        let total_logs: i64 = query_scalar("SELECT COUNT(*) FROM logs")
-            .fetch_one(&self.pool)
-            .await?;
-        let total_alerts: i64 = query_scalar("SELECT COUNT(*) FROM alerts")
-            .fetch_one(&self.pool)
-            .await?;
-        let active_alerts: i64 = query_scalar(
-            "SELECT COUNT(*) FROM alerts WHERE status IN ('NEW', 'INVESTIGATING')",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        let critical_alerts: i64 = query_scalar(
-            "SELECT COUNT(*) FROM alerts WHERE severity = 'CRITICAL'",
+        // Read aggregated counters from the singleton `system_stats` row.
+        // The periodic stats sync task writes these values from Redis, so
+        // dashboard queries should rely on that persisted snapshot instead
+        // of counting raw logs (which are no longer persisted in Postgres).
+        let row = sqlx::query!(
+            "SELECT total_logs, total_alerts, active_alerts, critical_alerts FROM system_stats WHERE id = 1"
         )
         .fetch_one(&self.pool)
         .await?;
 
-        Ok((total_logs, total_alerts, active_alerts, critical_alerts))
+        Ok((row.total_logs, row.total_alerts, row.active_alerts, row.critical_alerts))
     }
 
     /// Persist aggregated counters into a singleton `system_stats` row.

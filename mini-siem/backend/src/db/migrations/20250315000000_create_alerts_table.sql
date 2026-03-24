@@ -24,19 +24,6 @@ CREATE INDEX idx_alerts_first_seen ON alerts(first_seen);
 CREATE INDEX idx_alerts_last_seen ON alerts(last_seen);
 
 -- Create logs table (optional - for storing all logs)
-CREATE TABLE IF NOT EXISTS logs (
-    id UUID PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL,
-    event_type VARCHAR(255) NOT NULL,
-    source_ip VARCHAR(45) NOT NULL,
-    target_user VARCHAR(255),
-    service VARCHAR(255),
-    message TEXT NOT NULL,
-    severity VARCHAR(50) NOT NULL,
-    metadata JSONB DEFAULT '{}',
-    received_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX idx_logs_source_ip ON logs(source_ip);
-CREATE INDEX idx_logs_timestamp ON logs(timestamp);
-CREATE INDEX idx_logs_event_type ON logs(event_type);
+-- Logs are indexed into Elasticsearch; removed Postgres `logs` table.
+-- For historical/dev cleanup, drop the table manually if desired:
+--   DROP TABLE IF EXISTS logs;
