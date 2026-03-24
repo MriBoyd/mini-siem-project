@@ -218,6 +218,21 @@ impl Cache for RedisCache {
         
         Ok(())
     }
+
+    async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.set(key, value).await?;
+        if let Some(exp) = expiry_seconds {
+            let _: () = conn.expire(key, exp as i64).await?;
+        }
+        Ok(())
+    }
+
+    async fn get_string(&self, key: &str) -> Result<Option<String>> {
+        let mut conn = self.conn.clone();
+        let value: Option<String> = conn.get(key).await?;
+        Ok(value)
+    }
 }
 
 impl RedisCache {

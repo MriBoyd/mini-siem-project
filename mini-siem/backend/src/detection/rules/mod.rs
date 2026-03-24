@@ -17,3 +17,4 @@ pub mod brute_force;
 pub mod port_scan;
 pub mod malware;
 pub mod generic;
+pub mod correlation;

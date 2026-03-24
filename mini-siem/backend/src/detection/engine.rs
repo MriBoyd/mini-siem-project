@@ -17,6 +17,7 @@ use super::rules::{
     port_scan::PortScanRule,
     malware::MalwareDetectionRule,
     generic::GenericRule,
+    correlation::{CorrelationRule, CorrelationDefinition},
 };
 use crate::detection::evaluator::RuleCondition;
 
@@ -240,6 +241,28 @@ impl DetectionEngine {
                         }
                     } else {
                         warn!("Generic rule {} has no condition", dr.name);
+                    }
+                }
+                "correlation" => {
+                    if let Some(condition_val) = dr.condition {
+                        match serde_json::from_value::<CorrelationDefinition>(condition_val) {
+                            Ok(def) => {
+                                let concrete = CorrelationRule::new(
+                                    dr.id.to_string(),
+                                    dr.name,
+                                    dr.severity,
+                                    def,
+                                    Arc::new(self.redis.clone()),
+                                );
+                                let compiled = Arc::new(CompiledRule::Correlation(concrete));
+                                for lt in compiled.log_types() {
+                                    new_rules.entry(lt).or_default().push(compiled.clone());
+                                }
+                            }
+                            Err(e) => error!("Failed to parse definition for correlation rule {}: {}", dr.name, e),
+                        }
+                    } else {
+                        warn!("Correlation rule {} has no definition", dr.name);
                     }
                 }
                 _ => warn!("Unknown rule type: {}", dr.rule_type),

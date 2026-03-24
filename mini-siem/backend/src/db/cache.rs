@@ -20,4 +20,7 @@ pub trait Cache: Send + Sync {
     async fn get_user_id_by_refresh_token(&self, token: &str) -> Result<Option<String>>;
     async fn revoke_refresh_token(&self, token: &str) -> Result<()>;
     async fn revoke_all_user_tokens(&self, user_id: &str) -> Result<()>;
+
+    async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()>;
+    async fn get_string(&self, key: &str) -> Result<Option<String>>;
 }

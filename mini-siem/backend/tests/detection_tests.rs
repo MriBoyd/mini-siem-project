@@ -29,6 +29,8 @@ impl Cache for MockCache {
     async fn get_user_id_by_refresh_token(&self, _token: &str) -> Result<Option<String>> { Ok(None) }
     async fn revoke_refresh_token(&self, _token: &str) -> Result<()> { Ok(()) }
     async fn revoke_all_user_tokens(&self, _user_id: &str) -> Result<()> { Ok(()) }
+    async fn set_string(&self, _key: &str, _value: &str, _expiry_seconds: Option<u64>) -> Result<()> { Ok(()) }
+    async fn get_string(&self, _key: &str) -> Result<Option<String>> { Ok(None) }
 }
 
 #[tokio::test]
