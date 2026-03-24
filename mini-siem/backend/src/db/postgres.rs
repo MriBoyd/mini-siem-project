@@ -1,4 +1,4 @@
-use sqlx::{postgres::PgPoolOptions, PgPool, query_as, query_scalar};
+use sqlx::{postgres::PgPoolOptions, PgPool, query_as, query_scalar, query, Row};
 use tracing::{info, error};
 use anyhow::Result;
 use uuid::Uuid;
@@ -135,7 +135,7 @@ impl PostgresDb {
         Ok(())
     }
 
-    pub async fn create_log(&self, log: &Log) -> Result<()> {
+    pub async fn create_log(&self, _log: &Log) -> Result<()> {
         // Raw log persistence has been moved to Elasticsearch. This
         // function was intentionally removed to avoid inserting logs
         // into Postgres. If code still calls this, return an error to
@@ -347,13 +347,20 @@ impl PostgresDb {
         // The periodic stats sync task writes these values from Redis, so
         // dashboard queries should rely on that persisted snapshot instead
         // of counting raw logs (which are no longer persisted in Postgres).
-        let row = sqlx::query!(
-            "SELECT total_logs, total_alerts, active_alerts, critical_alerts FROM system_stats WHERE id = 1"
+        // Use dynamic query to avoid compile-time verification which requires
+        // the database schema to be present at build time (CI/local dev may not have it).
+        let row = query(
+            "SELECT total_logs, total_alerts, active_alerts, critical_alerts FROM system_stats WHERE id = 1",
         )
         .fetch_one(&self.pool)
         .await?;
 
-        Ok((row.total_logs, row.total_alerts, row.active_alerts, row.critical_alerts))
+        let total_logs: i64 = row.try_get("total_logs")?;
+        let total_alerts: i64 = row.try_get("total_alerts")?;
+        let active_alerts: i64 = row.try_get("active_alerts")?;
+        let critical_alerts: i64 = row.try_get("critical_alerts")?;
+
+        Ok((total_logs, total_alerts, active_alerts, critical_alerts))
     }
 
     /// Persist aggregated counters into a singleton `system_stats` row.
