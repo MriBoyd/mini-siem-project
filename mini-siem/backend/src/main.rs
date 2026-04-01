@@ -32,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let slack_webhook = cfg.slack_webhook.clone();
     let detection_workers = cfg.detection_workers.max(1);
     let detection_mailbox_size = cfg.detection_mailbox_size.max(1);
+    let detection_partition_key = cfg.detection_partition_key.clone();
 
     info!("✅ Configuration loaded. Connecting to database and message brokers...");
 
@@ -82,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         kafka.clone(),
     ).await);
     info!("🧠 Detection worker pool: {} workers, mailbox size {}", detection_workers, detection_mailbox_size);
+    info!("🧠 Detection partition key: {}", detection_partition_key);
 
     let mut detection_worker_senders = Vec::with_capacity(detection_workers);
     let mut detection_worker_handles = Vec::with_capacity(detection_workers);
@@ -95,6 +97,11 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tokio::select! {
                     Some(log) = worker_rx.recv() => {
+                        metrics::gauge!(
+                            "siem_detection_worker_mailbox_depth",
+                            worker_rx.len() as f64,
+                            "worker" => worker_id.to_string()
+                        );
                         engine.process_log(log).await;
                     }
                     _ = worker_shutdown_rx.recv() => {
@@ -114,9 +121,16 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tokio::select! {
                     Some(log) = log_rx.recv() => {
-                        let worker_idx = detection_partition_index(&log, detection_worker_senders.len());
+                        let worker_idx = detection_partition_index(&log, detection_worker_senders.len(), &detection_partition_key);
+                        let dispatch_start = std::time::Instant::now();
                         if let Err(e) = detection_worker_senders[worker_idx].send(log).await {
                             error!("Detection worker {} mailbox closed: {}", worker_idx, e);
+                            metrics::counter!("siem_detection_dispatch_failures_total", 1, "worker" => worker_idx.to_string());
+                        } else {
+                            let sender = &detection_worker_senders[worker_idx];
+                            let depth = (sender.max_capacity().saturating_sub(sender.capacity())) as f64;
+                            metrics::gauge!("siem_detection_worker_mailbox_depth", depth, "worker" => worker_idx.to_string());
+                            metrics::histogram!("siem_detection_dispatch_wait_seconds", dispatch_start.elapsed().as_secs_f64(), "worker" => worker_idx.to_string());
                         }
                     }
                     _ = detect_shutdown_rx.recv() => {
@@ -499,13 +513,28 @@ async fn shutdown_signal() {
     }
 }
 
-fn detection_partition_index(log: &types::Log, worker_count: usize) -> usize {
+fn detection_partition_index(log: &types::Log, worker_count: usize, partition_key: &str) -> usize {
     if worker_count == 0 {
         return 0;
     }
 
     let mut hasher = FxHasher::default();
-    log.tenant_id.hash(&mut hasher);
-    log.source_ip.hash(&mut hasher);
+    match partition_key {
+        "tenant" => {
+            log.tenant_id.hash(&mut hasher);
+        }
+        "source_ip" => {
+            log.source_ip.hash(&mut hasher);
+        }
+        "tenant_source_ip" | "tenant+source_ip" | "tenant_source" => {
+            log.tenant_id.hash(&mut hasher);
+            log.source_ip.hash(&mut hasher);
+        }
+        other => {
+            log.tenant_id.hash(&mut hasher);
+            log.source_ip.hash(&mut hasher);
+            tracing::warn!("Unknown DETECTION_PARTITION_KEY '{}', falling back to tenant_source_ip", other);
+        }
+    }
     (hasher.finish() as usize) % worker_count
 }

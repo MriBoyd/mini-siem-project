@@ -12,6 +12,7 @@ pub struct Config {
     pub cors_allowed_origins: Vec<String>,
     pub detection_workers: usize,
     pub detection_mailbox_size: usize,
+    pub detection_partition_key: String,
     pub kafka_pause_on_full: bool,
     pub kafka_pause_timeout_ms: u64,
     pub rate_limit_per_ip: usize,
@@ -51,6 +52,8 @@ impl Config {
         let detection_mailbox_size = env::var("DETECTION_MAILBOX_SIZE").ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2048);
+        let detection_partition_key = env::var("DETECTION_PARTITION_KEY")
+            .unwrap_or_else(|_| "tenant_source_ip".to_string());
         let kafka_pause_on_full = env::var("KAFKA_PAUSE_ON_FULL").ok()
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(true);
@@ -79,6 +82,7 @@ impl Config {
             cors_allowed_origins,
             detection_workers,
             detection_mailbox_size,
+            detection_partition_key,
             kafka_pause_on_full,
             kafka_pause_timeout_ms,
             rate_limit_per_ip,
