@@ -9,7 +9,7 @@ use mini_siem::db::cache::Cache;
 use mini_siem::queue::kafka::KafkaQueue;
 use mini_siem::response::engine::ResponseEngine;
 use mini_siem::response::actions::WebhookAction;
-use mini_siem::{api, types, detection, alerting, config};
+use mini_siem::{api, types, detection, alerting, config, auth};
 
 
 #[tokio::main]
@@ -34,6 +34,9 @@ async fn main() -> anyhow::Result<()> {
     
     // Initialize database
     let db = Arc::new(PostgresDb::new(&database_url).await?);
+
+    // Warm and periodically refresh the JWKS cache when external verification keys are used.
+    let _jwks_refresh_handle = auth::jwt::spawn_jwks_refresh_task();
     
     // Initialize Redis
     let redis = RedisCache::new(&redis_url).await?;
