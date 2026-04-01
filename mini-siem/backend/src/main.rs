@@ -644,6 +644,28 @@ async fn main() -> anyhow::Result<()> {
     });
     task_registry.push("tenant_retention", retention_handle);
 
+    let db_clone_for_case_sla = db.clone();
+    let mut case_sla_shutdown_rx = shutdown_tx.subscribe();
+    let case_sla_handle = task::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    match db_clone_for_case_sla.escalate_overdue_cases().await {
+                        Ok(count) if count > 0 => info!(count, "Escalated overdue cases"),
+                        Ok(_) => {}
+                        Err(e) => error!("Failed to sweep overdue cases: {}", e),
+                    }
+                }
+                _ = case_sla_shutdown_rx.recv() => {
+                    info!("🛑 Case SLA worker received shutdown");
+                    break;
+                }
+            }
+        }
+    });
+    task_registry.push("case_sla_sweep", case_sla_handle);
+
     info!("✅ Mini SIEM fully initialized");
     info!("📡 API: http://{}", cfg.api_bind);
     info!("📊 Kafka: {}", kafka_brokers);

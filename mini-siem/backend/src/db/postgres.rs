@@ -10,6 +10,7 @@ use crate::db::models::user::User;
 use crate::db::models::rule::{DetectionRule, RuleCreate};
 use crate::db::models::audit::AuditEvent;
 use crate::db::models::compliance::TenantCompliancePolicy;
+use crate::db::models::case::{CaseRecord, CasePlaybook, CaseTimelineEvent, CaseStatus};
 use crate::db::cache::Cache;
 use serde_json::Value;
 use crate::auth::password::hash_password;
@@ -737,6 +738,477 @@ impl PostgresDb {
         .await?;
 
         Ok(rows)
+    }
+
+    async fn ensure_default_case_playbooks(&self, tenant_id: &str) -> Result<()> {
+        let existing: i64 = query_scalar("SELECT COUNT(*) FROM case_playbooks WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        if existing > 0 {
+            return Ok(());
+        }
+
+        let playbook_id = Uuid::new_v4();
+        let now = Utc::now();
+        let steps = serde_json::json!([
+            {
+                "title": "Confirm owner",
+                "action_type": "assign",
+                "description": "Assign the case to the on-call responder or analyst",
+                "automated": false,
+                "details": "Review the alert, then set ownership"
+            },
+            {
+                "title": "Contain source",
+                "action_type": "containment",
+                "description": "Block or isolate the suspicious source until verified",
+                "automated": false,
+                "details": "Use firewall, EDR, or account controls"
+            },
+            {
+                "title": "Capture evidence",
+                "action_type": "collect",
+                "description": "Attach logs, screenshots, and notes to the timeline",
+                "automated": true,
+                "details": "Use the case timeline for evidence preservation"
+            }
+        ]);
+
+        sqlx::query(
+            r#"
+            INSERT INTO case_playbooks (
+                id, tenant_id, name, description, severity, sla_minutes, escalate_after_minutes,
+                steps, is_enabled, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9, $10)
+            "#,
+        )
+        .bind(playbook_id)
+        .bind(tenant_id)
+        .bind("Default incident response")
+        .bind("Triaged case path that links alert, ownership, escalation, and postmortem evidence.")
+        .bind("HIGH")
+        .bind(60_i32)
+        .bind(120_i32)
+        .bind(steps)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn list_case_playbooks(&self, tenant_id: &str) -> Result<Vec<CasePlaybook>> {
+        self.ensure_default_case_playbooks(tenant_id).await?;
+
+        let rows = query_as::<_, CasePlaybook>(
+            r#"
+            SELECT id, tenant_id, name, description, severity, sla_minutes, escalate_after_minutes,
+                   steps, is_enabled, created_at, updated_at
+            FROM case_playbooks
+            WHERE tenant_id = $1
+            ORDER BY is_enabled DESC, created_at ASC
+            "#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn get_case_playbook(&self, tenant_id: &str, playbook_id: Uuid) -> Result<Option<CasePlaybook>> {
+        let row = query_as::<_, CasePlaybook>(
+            r#"
+            SELECT id, tenant_id, name, description, severity, sla_minutes, escalate_after_minutes,
+                   steps, is_enabled, created_at, updated_at
+            FROM case_playbooks
+            WHERE tenant_id = $1 AND id = $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(playbook_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_cases(&self, tenant_id: &str) -> Result<Vec<CaseRecord>> {
+        let rows = query_as::<_, CaseRecord>(
+            r#"
+            SELECT id, tenant_id, primary_alert_id, title, summary, severity, status, owner_user_id,
+                   owner_email, playbook_id, sla_due_at, escalation_at, escalated_at, resolved_at,
+                   outcome, postmortem_summary, created_at, updated_at
+            FROM cases
+            WHERE tenant_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn get_case_by_id(&self, tenant_id: &str, case_id: Uuid) -> Result<Option<CaseRecord>> {
+        let row = query_as::<_, CaseRecord>(
+            r#"
+            SELECT id, tenant_id, primary_alert_id, title, summary, severity, status, owner_user_id,
+                   owner_email, playbook_id, sla_due_at, escalation_at, escalated_at, resolved_at,
+                   outcome, postmortem_summary, created_at, updated_at
+            FROM cases
+            WHERE tenant_id = $1 AND id = $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(case_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn get_case_by_alert_id(&self, tenant_id: &str, alert_id: Uuid) -> Result<Option<CaseRecord>> {
+        let row = query_as::<_, CaseRecord>(
+            r#"
+            SELECT c.id, c.tenant_id, c.primary_alert_id, c.title, c.summary, c.severity, c.status,
+                   c.owner_user_id, c.owner_email, c.playbook_id, c.sla_due_at, c.escalation_at,
+                   c.escalated_at, c.resolved_at, c.outcome, c.postmortem_summary, c.created_at, c.updated_at
+            FROM cases c
+            LEFT JOIN case_alert_links l ON l.case_id = c.id AND l.tenant_id = c.tenant_id
+            WHERE c.tenant_id = $1 AND (c.primary_alert_id = $2 OR l.alert_id = $2)
+            ORDER BY c.created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(alert_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_case_alert_ids(&self, tenant_id: &str, case_id: Uuid) -> Result<Vec<Uuid>> {
+        let rows = query_scalar::<_, Uuid>(
+            "SELECT alert_id FROM case_alert_links WHERE tenant_id = $1 AND case_id = $2 ORDER BY created_at ASC",
+        )
+        .bind(tenant_id)
+        .bind(case_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn list_case_timeline(&self, tenant_id: &str, case_id: Uuid) -> Result<Vec<CaseTimelineEvent>> {
+        let rows = query_as::<_, CaseTimelineEvent>(
+            r#"
+            SELECT id, case_id, tenant_id, event_type, message, actor_user_id, actor_email, metadata, created_at
+            FROM case_timeline_events
+            WHERE tenant_id = $1 AND case_id = $2
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(case_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn record_case_event(
+        &self,
+        tenant_id: &str,
+        case_id: Uuid,
+        event_type: &str,
+        message: &str,
+        actor_user_id: Option<&str>,
+        actor_email: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO case_timeline_events (
+                id, case_id, tenant_id, event_type, message, actor_user_id, actor_email, metadata, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(case_id)
+        .bind(tenant_id)
+        .bind(event_type)
+        .bind(message)
+        .bind(actor_user_id)
+        .bind(actor_email)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn create_case_from_alert(
+        &self,
+        alert: &Alert,
+        owner_user_id: Option<&str>,
+        owner_email: Option<&str>,
+        title: Option<String>,
+        summary: Option<String>,
+        playbook_id: Option<Uuid>,
+    ) -> Result<CaseRecord> {
+        if let Some(existing) = self.get_case_by_alert_id(&alert.tenant_id, alert.id).await? {
+            return Ok(existing);
+        }
+
+        self.ensure_default_case_playbooks(&alert.tenant_id).await?;
+
+        let playbook = match playbook_id {
+            Some(id) => self.get_case_playbook(&alert.tenant_id, id).await?,
+            None => self.list_case_playbooks(&alert.tenant_id).await?.into_iter().find(|playbook| playbook.is_enabled),
+        };
+
+        let now = Utc::now();
+        let (sla_minutes, escalate_after_minutes, assigned_playbook_id) = match playbook.as_ref() {
+            Some(playbook) => (playbook.sla_minutes, playbook.escalate_after_minutes, Some(playbook.id)),
+            None => (60, 120, None),
+        };
+
+        let case_id = Uuid::new_v4();
+        let case_title = title.unwrap_or_else(|| format!("{} on {}", alert.rule_name, alert.source_ip));
+        let case_summary = summary.unwrap_or_else(|| alert.description.clone());
+        let severity = alert.severity.to_string();
+        let status = CaseStatus::New.to_string();
+        let sla_due_at = now + chrono::Duration::minutes(sla_minutes.max(1) as i64);
+        let escalation_at = now + chrono::Duration::minutes(escalate_after_minutes.max(1) as i64);
+
+        let record = sqlx::query_as::<_, CaseRecord>(
+            r#"
+            INSERT INTO cases (
+                id, tenant_id, primary_alert_id, title, summary, severity, status,
+                owner_user_id, owner_email, playbook_id, sla_due_at, escalation_at,
+                escalated_at, resolved_at, outcome, postmortem_summary, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULL, NULL, NULL, NULL, $13, $14)
+            RETURNING id, tenant_id, primary_alert_id, title, summary, severity, status, owner_user_id,
+                      owner_email, playbook_id, sla_due_at, escalation_at, escalated_at, resolved_at,
+                      outcome, postmortem_summary, created_at, updated_at
+            "#,
+        )
+        .bind(case_id)
+        .bind(&alert.tenant_id)
+        .bind(alert.id)
+        .bind(case_title)
+        .bind(case_summary)
+        .bind(severity)
+        .bind(status)
+        .bind(owner_user_id)
+        .bind(owner_email)
+        .bind(assigned_playbook_id)
+        .bind(sla_due_at)
+        .bind(escalation_at)
+        .bind(now)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO case_alert_links (case_id, alert_id, tenant_id, created_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (case_id, alert_id) DO NOTHING
+            "#,
+        )
+        .bind(case_id)
+        .bind(alert.id)
+        .bind(&alert.tenant_id)
+        .execute(&self.pool)
+        .await?;
+
+        let _ = self.record_case_event(
+            &alert.tenant_id,
+            case_id,
+            "case.created",
+            "Case created from incoming alert",
+            owner_user_id,
+            owner_email,
+            serde_json::json!({
+                "alert_id": alert.id,
+                "playbook_id": assigned_playbook_id,
+                "severity": alert.severity.to_string(),
+            }),
+        ).await;
+
+        let _ = self.record_case_event(
+            &alert.tenant_id,
+            case_id,
+            "alert.linked",
+            "Primary alert linked to case",
+            None,
+            None,
+            serde_json::json!({"alert_id": alert.id, "rule_id": alert.rule_id, "source_ip": alert.source_ip}),
+        ).await;
+
+        if let Some(playbook) = playbook {
+            let _ = self.record_case_event(
+                &alert.tenant_id,
+                case_id,
+                "playbook.assigned",
+                &format!("Playbook '{}' assigned to case", playbook.name),
+                None,
+                None,
+                serde_json::json!({
+                    "playbook_id": playbook.id,
+                    "playbook_name": playbook.name,
+                    "steps": playbook.steps,
+                }),
+            ).await;
+        }
+
+        Ok(record)
+    }
+
+    pub async fn update_case(
+        &self,
+        tenant_id: &str,
+        case_id: Uuid,
+        status: Option<CaseStatus>,
+        owner_user_id: Option<Option<String>>,
+        owner_email: Option<Option<String>>,
+        outcome: Option<Option<String>>,
+        postmortem_summary: Option<Option<String>>,
+    ) -> Result<CaseRecord> {
+        let existing = self.get_case_by_id(tenant_id, case_id).await?.ok_or_else(|| anyhow::anyhow!("case not found"))?;
+
+        let next_status = status.unwrap_or_else(|| existing.status.parse().unwrap_or(CaseStatus::New));
+        let next_owner_user_id = owner_user_id.unwrap_or(existing.owner_user_id.clone());
+        let next_owner_email = owner_email.unwrap_or(existing.owner_email.clone());
+        let next_outcome = outcome.unwrap_or(existing.outcome.clone());
+        let next_postmortem_summary = postmortem_summary.unwrap_or(existing.postmortem_summary.clone());
+        let mut escalated_at = existing.escalated_at;
+        let mut resolved_at = existing.resolved_at;
+
+        if matches!(next_status, CaseStatus::Escalated) && escalated_at.is_none() {
+            escalated_at = Some(Utc::now());
+        }
+        if matches!(next_status, CaseStatus::Resolved | CaseStatus::FalsePositive | CaseStatus::Closed | CaseStatus::Mitigated) && resolved_at.is_none() {
+            resolved_at = Some(Utc::now());
+        }
+
+        let record = sqlx::query_as::<_, CaseRecord>(
+            r#"
+            UPDATE cases
+            SET status = $1,
+                owner_user_id = $2,
+                owner_email = $3,
+                outcome = $4,
+                postmortem_summary = $5,
+                escalated_at = $6,
+                resolved_at = $7,
+                updated_at = NOW()
+            WHERE tenant_id = $8 AND id = $9
+            RETURNING id, tenant_id, primary_alert_id, title, summary, severity, status, owner_user_id,
+                      owner_email, playbook_id, sla_due_at, escalation_at, escalated_at, resolved_at,
+                      outcome, postmortem_summary, created_at, updated_at
+            "#,
+        )
+        .bind(next_status.to_string())
+        .bind(&next_owner_user_id)
+        .bind(&next_owner_email)
+        .bind(&next_outcome)
+        .bind(&next_postmortem_summary)
+        .bind(escalated_at)
+        .bind(resolved_at)
+        .bind(tenant_id)
+        .bind(case_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if existing.status != record.status {
+            let _ = self.record_case_event(
+                tenant_id,
+                case_id,
+                "case.status_changed",
+                &format!("Case status changed from {} to {}", existing.status, record.status),
+                next_owner_user_id.as_deref(),
+                next_owner_email.as_deref(),
+                serde_json::json!({"from": existing.status, "to": record.status}),
+            ).await;
+        }
+
+        if existing.owner_user_id != record.owner_user_id || existing.owner_email != record.owner_email {
+            let _ = self.record_case_event(
+                tenant_id,
+                case_id,
+                "case.owner_changed",
+                "Case ownership updated",
+                next_owner_user_id.as_deref(),
+                next_owner_email.as_deref(),
+                serde_json::json!({"owner_user_id": record.owner_user_id, "owner_email": record.owner_email}),
+            ).await;
+        }
+
+        Ok(record)
+    }
+
+    pub async fn escalate_overdue_cases(&self) -> Result<u64> {
+        let overdue_cases = query_as::<_, CaseRecord>(
+            r#"
+            SELECT id, tenant_id, primary_alert_id, title, summary, severity, status, owner_user_id,
+                   owner_email, playbook_id, sla_due_at, escalation_at, escalated_at, resolved_at,
+                   outcome, postmortem_summary, created_at, updated_at
+            FROM cases
+            WHERE status IN ('NEW', 'INVESTIGATING', 'AWAITINGCUSTOMER')
+              AND escalation_at IS NOT NULL
+              AND escalation_at <= NOW()
+              AND (status <> 'ESCALATED')
+            ORDER BY escalation_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut escalated = 0_u64;
+        for case_record in overdue_cases {
+            let updated = self.update_case(
+                &case_record.tenant_id,
+                case_record.id,
+                Some(CaseStatus::Escalated),
+                None,
+                None,
+                None,
+                None,
+            ).await?;
+            if updated.status == "ESCALATED" {
+                escalated += 1;
+            }
+        }
+
+        Ok(escalated)
+    }
+
+    pub async fn get_case_detail(&self, tenant_id: &str, case_id: Uuid) -> Result<Option<crate::db::models::case::CaseDetail>> {
+        let Some(case_record) = self.get_case_by_id(tenant_id, case_id).await? else {
+            return Ok(None);
+        };
+
+        let alerts = self.list_case_alert_ids(tenant_id, case_id).await?;
+        let timeline = self.list_case_timeline(tenant_id, case_id).await?;
+        let playbook = match case_record.playbook_id {
+            Some(playbook_id) => self.get_case_playbook(tenant_id, playbook_id).await?,
+            None => None,
+        };
+
+        Ok(Some(crate::db::models::case::CaseDetail {
+            case_record,
+            alerts,
+            timeline,
+            playbook,
+        }))
     }
 }
 

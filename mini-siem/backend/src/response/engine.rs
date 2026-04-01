@@ -38,10 +38,9 @@ impl ResponseEngine {
         self.add_severity_policy(None, severity, action).await;
     }
 
-    pub async fn handle_alert(&self, alert: &Alert) {
+    async fn collect_actions(&self, alert: &Alert) -> Vec<Arc<dyn ResponseAction>> {
         let mut actions_to_run: Vec<Arc<dyn ResponseAction>> = Vec::new();
 
-        // 1. Check specific rule policies
         {
             let rule_policies = self.rule_policies.read().await;
             if let Some(actions) = rule_policies.get(&(alert.tenant_id.clone(), alert.rule_id.clone())) {
@@ -55,7 +54,6 @@ impl ResponseEngine {
             }
         }
 
-        // 2. Check severity policies
         {
             let severity_policies = self.severity_policies.read().await;
             if let Some(actions) = severity_policies.get(&(alert.tenant_id.clone(), alert.severity)) {
@@ -69,6 +67,20 @@ impl ResponseEngine {
                 }
             }
         }
+
+        actions_to_run
+    }
+
+    pub async fn preview_actions(&self, alert: &Alert) -> Vec<String> {
+        self.collect_actions(alert)
+            .await
+            .into_iter()
+            .map(|action| action.name().to_string())
+            .collect()
+    }
+
+    pub async fn handle_alert(&self, alert: &Alert) {
+        let actions_to_run = self.collect_actions(alert).await;
 
         if actions_to_run.is_empty() {
             return;

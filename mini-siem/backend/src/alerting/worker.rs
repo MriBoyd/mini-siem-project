@@ -7,7 +7,7 @@ use crate::db::PostgresDb;
 use crate::db::cache::Cache;
 use crate::db::redis::RedisCache;
 use crate::response::engine::ResponseEngine;
-use crate::types::Alert;
+use crate::types::{Alert, AlertSeverity};
 use crate::queue::kafka::KafkaQueue;
 
 /// Spawn an alert worker that consumes `siem-alerts` from Kafka, persists alerts,
@@ -85,6 +85,31 @@ pub async fn spawn_alert_worker(
                     tokio::spawn(async move {
                         re.handle_alert(&alert_clone).await;
                     });
+
+                    if matches!(alert.severity, AlertSeverity::Critical | AlertSeverity::High) {
+                        match db.create_case_from_alert(&alert, None, None, None, None, None).await {
+                            Ok(case_record) => {
+                                let action_names = response_engine.preview_actions(&alert).await;
+                                if !action_names.is_empty() {
+                                    let _ = db.record_case_event(
+                                        &alert.tenant_id,
+                                        case_record.id,
+                                        "response.plan_created",
+                                        "Automated responder actions launched",
+                                        None,
+                                        None,
+                                        serde_json::json!({
+                                            "alert_id": alert.id,
+                                            "actions": action_names,
+                                        }),
+                                    ).await;
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to create or load case for alert {}: {}", alert.id, e);
+                            }
+                        }
+                    }
 
                     // Update per-tenant alert counters for dashboard isolation.
                     let is_crit = alert.severity == crate::types::AlertSeverity::Critical;

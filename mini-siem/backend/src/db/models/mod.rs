@@ -6,3 +6,4 @@ pub mod user;
 pub mod rule;
 pub mod audit;
 pub mod compliance;
+pub mod case;
