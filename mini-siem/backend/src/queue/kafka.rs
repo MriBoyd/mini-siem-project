@@ -10,7 +10,7 @@ use rdkafka::util::Timeout;
 use serde_json;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use crate::db::cache::Cache;
 use crate::db::redis::RedisCache;
@@ -26,6 +26,68 @@ const DEFAULT_TOPIC: &str = "siem-logs";
 const ALERTS_TOPIC: &str = "siem-alerts";
 pub const ALERTS_DLQ_TOPIC: &str = "siem-alerts-dlq";
 pub const LOGS_DLQ_TOPIC: &str = "siem-logs-dlq";
+
+#[derive(Clone, Debug)]
+struct LocalRateLimitState {
+    capacity: f64,
+    tokens: f64,
+    refill_per_ms: f64,
+    last_refill_ms: i64,
+    blocked_until_ms: i64,
+    last_seen_ms: i64,
+}
+
+impl LocalRateLimitState {
+    fn new(limit: u32, window_ms: u64, now_ms: i64) -> Self {
+        let capacity = limit.max(1) as f64;
+        let refill_per_ms = capacity / window_ms.max(1) as f64;
+
+        Self {
+            capacity,
+            tokens: capacity,
+            refill_per_ms,
+            last_refill_ms: now_ms,
+            blocked_until_ms: 0,
+            last_seen_ms: now_ms,
+        }
+    }
+
+    fn touch(&mut self, now_ms: i64) {
+        self.last_seen_ms = now_ms;
+    }
+
+    fn refill(&mut self, now_ms: i64) {
+        if now_ms <= self.last_refill_ms {
+            return;
+        }
+
+        let elapsed_ms = (now_ms - self.last_refill_ms) as f64;
+        self.tokens = (self.tokens + elapsed_ms * self.refill_per_ms).min(self.capacity);
+        self.last_refill_ms = now_ms;
+    }
+
+    fn allow(&mut self, now_ms: i64) -> bool {
+        self.touch(now_ms);
+
+        if now_ms < self.blocked_until_ms {
+            return false;
+        }
+
+        self.refill(now_ms);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn block_for(&mut self, now_ms: i64, window_ms: u64) {
+        self.blocked_until_ms = now_ms + window_ms as i64;
+        self.tokens = 0.0;
+        self.touch(now_ms);
+    }
+}
 
 pub struct KafkaQueue {
     producer: FutureProducer,
@@ -259,32 +321,52 @@ impl KafkaQueue {
     /// `full_counter` is incremented when the channel is full (monitoring aid).
     pub async fn consume_logs(&self, tx: mpsc::Sender<std::sync::Arc<Log>>, index_tx: Option<mpsc::Sender<std::sync::Arc<Log>>>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
         let mut stream = self.consumer.stream();
+        let mut local_rate_limits: HashMap<String, LocalRateLimitState> = HashMap::new();
+        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(30));
+        cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        while let Some(message) = stream.next().await {
-            match message {
-                Ok(msg) => {
+        loop {
+            tokio::select! {
+                _ = cleanup_interval.tick() => {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let expiry_ms = (rate_limit_window_ms as i64).saturating_mul(4).max(60_000);
+                    local_rate_limits.retain(|_, state| now_ms.saturating_sub(state.last_seen_ms) <= expiry_ms);
+                }
+                message = stream.next() => match message {
+                Some(Ok(msg)) => {
                     if let Some(payload) = msg.payload() {
                         if let Ok(log) = serde_json::from_slice::<Log>(payload) {
                             // Centralized Redis sliding-window rate limiter per IP
                             let source_ip = log.source_ip.clone();
+                            let now_ms = chrono::Utc::now().timestamp_millis();
                             let rl_key = format!("siem:ratelimit:ip:{}", source_ip);
-                            let allowed = match redis.allow_sliding_window(&rl_key, rate_limit_window_ms, rate_limit_per_ip as u32).await {
-                                Ok(true) => true,
-                                Ok(false) => {
-                                    let mut hasher = DefaultHasher::new();
-                                    log.id.hash(&mut hasher);
-                                    let h = hasher.finish();
-                                    let sample = if rate_limit_sample_rate <= 1 { true } else { (h % (rate_limit_sample_rate as u64)) == 0 };
-                                    if sample {
-                                        metrics::counter!("siem_logs_sampled_total", 1, "source_ip" => source_ip.clone());
-                                    } else {
-                                        metrics::counter!("siem_logs_rate_limited_total", 1, "source_ip" => source_ip.clone());
+                            let state = local_rate_limits.entry(source_ip.clone()).or_insert_with(|| LocalRateLimitState::new(rate_limit_per_ip as u32, rate_limit_window_ms, now_ms));
+
+                            let allowed = if state.allow(now_ms) {
+                                true
+                            } else {
+                                match redis.allow_sliding_window(&rl_key, rate_limit_window_ms, rate_limit_per_ip as u32).await {
+                                    Ok(true) => {
+                                        state.tokens = 0.0;
+                                        true
                                     }
-                                    sample
-                                }
-                                Err(e) => {
-                                    tracing::warn!("redis rate limiter error: {} - allowing log to avoid data loss", e);
-                                    true
+                                    Ok(false) => {
+                                        state.block_for(now_ms, rate_limit_window_ms);
+                                        let mut hasher = DefaultHasher::new();
+                                        log.id.hash(&mut hasher);
+                                        let h = hasher.finish();
+                                        let sample = if rate_limit_sample_rate <= 1 { true } else { (h % (rate_limit_sample_rate as u64)) == 0 };
+                                        if sample {
+                                            metrics::counter!("siem_logs_sampled_total", 1, "source_ip" => source_ip.clone());
+                                        } else {
+                                            metrics::counter!("siem_logs_rate_limited_total", 1, "source_ip" => source_ip.clone());
+                                        }
+                                        sample
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("redis rate limiter error: {} - allowing log to avoid data loss", e);
+                                        true
+                                    }
                                 }
                             };
 
@@ -356,10 +438,11 @@ impl KafkaQueue {
                         }
                     }
                 }
-                Err(e) => { tracing::warn!("kafka consumer error: {}", e); }
+                Some(Err(e)) => { tracing::warn!("kafka consumer error: {}", e); }
+                None => break,
+                },
             }
         }
-
         Ok(())
     }
 
