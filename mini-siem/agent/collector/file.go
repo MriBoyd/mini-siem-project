@@ -103,7 +103,9 @@ func (fc *FileCollector) readNewLines() error {
 		}
 
 		log := models.NewFileLog(fc.path, line, fc.tags)
-		fc.queue.Push(log)
+		if !fc.queue.TryPush(log) {
+			fmt.Printf("Dropping file log due to full queue: %s\n", fc.path)
+		}
 	}
 
 	// Update offset to current end

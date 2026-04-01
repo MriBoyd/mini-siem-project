@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{Utc, DateTime};
 use tracing::info;
-use tokio::sync::mpsc::error::TrySendError;
+use tokio::time::{timeout, Duration};
 
 use crate::api::server::AppState;
 use crate::db::cache::Cache;
@@ -65,16 +65,8 @@ pub async fn ingest_log(
     // Canonical ingest path: enqueue to the shared producer task.
     // The task owns Kafka send I/O so request handlers avoid per-request spawn/
     // send overhead and fail fast when the bounded queue is saturated.
-    match state.ingest_tx.try_send(std::sync::Arc::new(log)) {
-        Ok(_) => {}
-        Err(TrySendError::Full(_)) => {
-            tracing::warn!("ingest queue full, dropping log {}", log_id);
-            return HttpResponse::ServiceUnavailable().body("ingest backlog");
-        }
-        Err(TrySendError::Closed(_)) => {
-            tracing::error!("ingest queue closed");
-            return HttpResponse::ServiceUnavailable().body("ingest unavailable");
-        }
+    if let Err(response) = enqueue_ingest_log(&state, log).await {
+        return response;
     }
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
@@ -190,16 +182,8 @@ pub async fn ingest_batch(
         };
 
         // Canonical ingest path: enqueue each log to the shared producer task.
-        match state.ingest_tx.try_send(std::sync::Arc::new(log)) {
-            Ok(_) => {}
-            Err(TrySendError::Full(_)) => {
-                tracing::warn!("ingest queue full during batch ingest, dropping log {}", log_id);
-                return HttpResponse::ServiceUnavailable().body("ingest backlog");
-            }
-            Err(TrySendError::Closed(_)) => {
-                tracing::error!("ingest queue closed during batch ingest");
-                return HttpResponse::ServiceUnavailable().body("ingest unavailable");
-            }
+        if let Err(response) = enqueue_ingest_log(&state, log).await {
+            return response;
         }
 
         responses.push(IngestLogResponse {
@@ -243,4 +227,19 @@ pub async fn ingest_batch(
         let _ = state.db.save_stats(&claims.tenant_id, tl, ta, aa, ca).await;
     }
     HttpResponse::Accepted().json(responses)
+}
+
+async fn enqueue_ingest_log(state: &web::Data<AppState>, log: Log) -> Result<(), HttpResponse> {
+    let send_fut = state.ingest_tx.send(std::sync::Arc::new(log));
+    match timeout(Duration::from_millis(25), send_fut).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => {
+            tracing::error!("ingest queue closed");
+            Err(HttpResponse::ServiceUnavailable().body("ingest unavailable"))
+        }
+        Err(_) => {
+            tracing::warn!("ingest queue saturated, timing out enqueue");
+            Err(HttpResponse::ServiceUnavailable().body("ingest backlog"))
+        }
+    }
 }
