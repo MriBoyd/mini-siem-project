@@ -477,6 +477,7 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         redis: redis.clone(),
         kafka: kafka.clone(),
+        elastic_index: elastic_index.clone(),
         ingest_tx: ingest_tx.clone(),
         log_tx: log_tx.clone(),
         alert_tx: alert_tx.clone(),

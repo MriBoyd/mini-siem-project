@@ -94,7 +94,7 @@ pub async fn recent_logs(req_head: HttpRequest, state: web::Data<AppState>) -> i
     };
 
     if let Some(el) = state.elastic.borrow().clone() {
-        let index_name = std::env::var("ELASTICSEARCH_INDEX").unwrap_or_else(|_| "mini-siem-logs".to_string());
+        let index_name = state.elastic_index.clone();
         let query = serde_json::json!({ "term": { "tenant_id": claims.tenant_id } });
         match el.as_ref().search(&index_name, query, 0, 50).await {
             Ok(v) => {
