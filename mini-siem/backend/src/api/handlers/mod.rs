@@ -7,3 +7,4 @@ pub mod rules;
 pub mod audit;
 pub mod compliance;
 pub mod cases;
+pub mod packs;

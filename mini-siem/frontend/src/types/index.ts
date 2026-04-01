@@ -19,7 +19,7 @@ export interface Alert {
   severity: AlertSeverity;
   description: string;
   source_ip: string;
-  events: any[]; // We can refine this if needed
+  events: unknown[];
   first_seen: string;
   last_seen: string;
   status: AlertStatus;
@@ -37,6 +37,39 @@ export interface DetectionRule {
   is_enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface DetectionPackRule {
+  name: string;
+  description: string;
+  rule_type: string;
+  severity: string;
+  threshold?: number | null;
+  window_seconds?: number | null;
+  condition: Record<string, unknown>;
+  validated: boolean;
+  installed_rule_id?: string | null;
+}
+
+export interface DetectionPackPlaybookStep {
+  title: string;
+  action_type: string;
+  owner_role: string;
+  automated: boolean;
+  description: string;
+}
+
+export interface DetectionPack {
+  slug: string;
+  vertical: string;
+  name: string;
+  description: string;
+  enrichment: Record<string, unknown>;
+  playbook: DetectionPackPlaybookStep[];
+  rules: DetectionPackRule[];
+  installed: boolean;
+  installed_rule_count: number;
+  total_rule_count: number;
 }
 
 export interface DashboardStats {
