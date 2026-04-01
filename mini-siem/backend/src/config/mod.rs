@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use std::env;
 
 #[derive(Debug, Clone)]
@@ -9,6 +9,7 @@ pub struct Config {
     pub slack_webhook: Option<String>,
     pub api_bind: String,
     pub metrics_bind: String,
+    pub cors_allowed_origins: Vec<String>,
     pub kafka_pause_on_full: bool,
     pub kafka_pause_timeout_ms: u64,
     pub rate_limit_per_ip: usize,
@@ -16,6 +17,15 @@ pub struct Config {
     pub rate_limit_sample_rate: u32,
     pub elasticsearch_host: String,
     pub elasticsearch_index: String,
+}
+
+fn parse_csv_list(raw: &str) -> Vec<String> {
+    raw
+        .split(',')
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .collect()
 }
 
 impl Config {
@@ -28,6 +38,11 @@ impl Config {
         let slack_webhook = env::var("SLACK_WEBHOOK").ok();
         let api_bind = env::var("API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
         let metrics_bind = env::var("METRICS_BIND").unwrap_or_else(|_| "127.0.0.1:9898".to_string());
+        let cors_allowed_origins = match env::var("CORS_ALLOWED_ORIGINS") {
+            Ok(raw) => parse_csv_list(&raw),
+            Err(_) if cfg!(debug_assertions) => parse_csv_list("http://localhost:3000,http://127.0.0.1:3000"),
+            Err(_) => return Err(anyhow!("CORS_ALLOWED_ORIGINS must be set in production")),
+        };
         let kafka_pause_on_full = env::var("KAFKA_PAUSE_ON_FULL").ok()
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(true);
@@ -53,6 +68,7 @@ impl Config {
             slack_webhook,
             api_bind,
             metrics_bind,
+            cors_allowed_origins,
             kafka_pause_on_full,
             kafka_pause_timeout_ms,
             rate_limit_per_ip,

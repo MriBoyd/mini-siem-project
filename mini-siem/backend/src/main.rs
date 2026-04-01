@@ -381,7 +381,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Run API server until shutdown signal or error
     tokio::select! {
-        res = api::run_server(app_state) => {
+        res = api::run_server(app_state, cfg.cors_allowed_origins.clone()) => {
             if let Err(e) = res {
                 // If the address is in use, log a clearer message
                 if e.kind() == std::io::ErrorKind::AddrInUse {

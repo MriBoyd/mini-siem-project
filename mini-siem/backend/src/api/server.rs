@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpServer, middleware::Logger};
+use actix_web::{web, App, HttpServer, middleware::Logger, http::header};
 use actix_cors::Cors;
 use tracing::info;
 use std::sync::Arc;
@@ -23,18 +23,26 @@ pub struct AppState {
     pub elastic: tokio::sync::watch::Receiver<Option<Arc<ElasticClient>>>,
 }
 
-pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
+pub async fn run_server(state: web::Data<AppState>, cors_allowed_origins: Vec<String>) -> std::io::Result<()> {
     // allow binding address to be configured via env var
     let bind_address = std::env::var("API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     
     info!("🚀 Starting Mini SIEM API on http://{}", bind_address);
     
     HttpServer::new(move || {
-        // Configure CORS
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header();
+        // Configure CORS for trusted browser clients only.
+        let mut cors = Cors::default()
+            .supports_credentials()
+            .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+            .allowed_header(header::AUTHORIZATION)
+            .allowed_header(header::ACCEPT)
+            .allowed_header(header::CONTENT_TYPE)
+            .allowed_header(header::HeaderName::from_static("x-ws-token"))
+            .allowed_header(header::HeaderName::from_static("sec-websocket-protocol"));
+
+        for origin in &cors_allowed_origins {
+            cors = cors.allowed_origin(origin.as_str());
+        }
         
         App::new()
             .app_data(state.clone())
