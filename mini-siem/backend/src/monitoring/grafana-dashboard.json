@@ -1,0 +1,67 @@
+{
+	"annotations": { "list": [] },
+	"editable": true,
+	"fiscalYearStartMonth": 0,
+	"graphTooltip": 1,
+	"id": null,
+	"links": [],
+	"panels": [
+		{
+			"type": "stat",
+			"title": "HTTP RPS",
+			"targets": [
+				{ "expr": "sum(rate(siem_http_requests_total[5m]))" }
+			],
+			"gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 }
+		},
+		{
+			"type": "stat",
+			"title": "HTTP 5xx Rate",
+			"targets": [
+				{ "expr": "sum(rate(siem_http_errors_total[5m]))" }
+			],
+			"gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 }
+		},
+		{
+			"type": "timeseries",
+			"title": "HTTP Latency p95",
+			"targets": [
+				{ "expr": "histogram_quantile(0.95, sum(rate(siem_http_request_duration_seconds_bucket[5m])) by (le))" }
+			],
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+		},
+		{
+			"type": "timeseries",
+			"title": "In-Flight Requests",
+			"targets": [
+				{ "expr": "siem_http_inflight_requests" }
+			],
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+		},
+		{
+			"type": "timeseries",
+			"title": "Kafka Lag",
+			"targets": [
+				{ "expr": "max(siem_kafka_partition_lag)" }
+			],
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 }
+		},
+		{
+			"type": "timeseries",
+			"title": "Detection Dispatch Wait p95",
+			"targets": [
+				{ "expr": "histogram_quantile(0.95, sum(rate(siem_detection_dispatch_wait_seconds_bucket[5m])) by (le, worker))" }
+			],
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 }
+		}
+	],
+	"schemaVersion": 39,
+	"style": "dark",
+	"tags": ["siem", "slo", "red", "use"],
+	"templating": { "list": [] },
+	"time": { "from": "now-6h", "to": "now" },
+	"timepicker": {},
+	"timezone": "browser",
+	"title": "Mini SIEM SLO Overview",
+	"version": 1
+}

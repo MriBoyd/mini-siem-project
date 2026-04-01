@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, broadcast};
 
 use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules};
-use crate::api::middleware::auth::JwtAuth;
+use crate::api::middleware::{auth::JwtAuth, telemetry::RequestTelemetry};
 use crate::db::PostgresDb;
 use crate::db::redis::RedisCache;
 use crate::queue::kafka::KafkaQueue;
@@ -49,6 +49,7 @@ pub async fn run_server(state: web::Data<AppState>, cors_allowed_origins: Vec<St
         App::new()
             .app_data(state.clone())
             .wrap(Logger::default())
+            .wrap(RequestTelemetry)
             .wrap(cors)
             .service(health::root)
             .service(health::health_check)

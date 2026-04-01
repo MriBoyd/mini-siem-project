@@ -22,6 +22,8 @@ pub struct Config {
     pub rate_limit_sample_rate: u32,
     pub elasticsearch_host: String,
     pub elasticsearch_index: String,
+    pub metrics_max_tenant_labels: usize,
+    pub otel_service_name: String,
 }
 
 fn parse_csv_list(raw: &str) -> Vec<String> {
@@ -79,6 +81,10 @@ impl Config {
             .unwrap_or(10);
         let elasticsearch_host = env::var("ELASTICSEARCH_HOST").unwrap_or_else(|_| "http://127.0.0.1:9200".to_string());
         let elasticsearch_index = env::var("ELASTICSEARCH_INDEX").unwrap_or_else(|_| "mini-siem-logs".to_string());
+        let metrics_max_tenant_labels = env::var("METRICS_MAX_TENANT_LABELS").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(128);
+        let otel_service_name = env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "mini-siem-backend".to_string());
 
         Ok(Self {
             database_url,
@@ -100,6 +106,8 @@ impl Config {
             rate_limit_sample_rate,
             elasticsearch_host,
             elasticsearch_index,
+            metrics_max_tenant_labels,
+            otel_service_name,
         })
     }
 }

@@ -6,10 +6,12 @@ use tracing::info;
 use tokio::time::{timeout, Duration};
 
 use crate::api::server::AppState;
+use crate::monitoring::bounded_tenant_label;
 use crate::db::cache::Cache;
 use crate::auth::jwt::Claims;
 use crate::types::{Log, LogSeverity};
 use serde_json::Value;
+use tracing::Span;
 
 #[derive(Debug, Deserialize)]
 pub struct IngestLogRequest {
@@ -42,6 +44,8 @@ pub async fn ingest_log(
 
     let log_id = Uuid::new_v4();
     let now = Utc::now();
+    let tenant_label = bounded_tenant_label(&claims.tenant_id);
+    Span::current().record("tenant_id", tracing::field::display(&tenant_label));
     
     // Create log object
     let log = Log {
@@ -70,6 +74,8 @@ pub async fn ingest_log(
     }
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
+    metrics::counter!("siem_tenant_ingest_logs_total", 1, "tenant" => tenant_label.clone(), "kind" => "single");
+    metrics::counter!("siem_http_ingest_requests_total", 1, "kind" => "single", "status_class" => "2xx");
     
     // Hot path stays write-only: the background stats task reads Redis and
     // persists/broadcasts snapshots out of band.
@@ -92,6 +98,8 @@ pub async fn recent_logs(req_head: HttpRequest, state: web::Data<AppState>) -> i
         Some(c) => c,
         None => return HttpResponse::Unauthorized().body("missing auth"),
     };
+    let tenant_label = bounded_tenant_label(&claims.tenant_id);
+    Span::current().record("tenant_id", tracing::field::display(&tenant_label));
 
     if let Some(el) = state.elastic.borrow().clone() {
         let index_name = state.elastic_index.clone();
@@ -134,6 +142,8 @@ pub async fn ingest_batch(
         Some(c) => c,
         None => return HttpResponse::Unauthorized().body("missing auth"),
     };
+    let tenant_label = bounded_tenant_label(&claims.tenant_id);
+    Span::current().record("tenant_id", tracing::field::display(&tenant_label));
 
     let now = Utc::now();
     let mut responses = Vec::with_capacity(req.logs.len());
@@ -167,6 +177,8 @@ pub async fn ingest_batch(
     }
     
     info!("📦 Accepted batch of {} logs", responses.len());
+    metrics::counter!("siem_tenant_ingest_logs_total", responses.len() as u64, "tenant" => tenant_label.clone(), "kind" => "batch");
+    metrics::counter!("siem_http_ingest_requests_total", 1, "kind" => "batch", "status_class" => "2xx");
     // Hot path stays write-only; background aggregation handles snapshots.
     if responses.len() > 0 {
         let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);

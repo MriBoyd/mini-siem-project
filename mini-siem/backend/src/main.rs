@@ -75,11 +75,8 @@ async fn final_stats_checkpoint(db: &Arc<PostgresDb>, redis: &RedisCache) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .compact()
-        .init();
+    // Initialize tracing + structured logs before any startup events.
+    let observability = mini_siem::monitoring::init_tracing("mini-siem-backend")?;
     
     info!("🚀 Starting Mini SIEM (Rust Edition) v{}", env!("CARGO_PKG_VERSION"));
     
@@ -94,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let detection_partition_key = cfg.detection_partition_key.clone();
     let kafka_lag_sample_interval_secs = cfg.kafka_lag_sample_interval_secs.max(1);
     let kafka_lag_watermark_timeout_ms = cfg.kafka_lag_watermark_timeout_ms.max(1);
+    mini_siem::monitoring::set_tenant_label_limit(cfg.metrics_max_tenant_labels);
 
     info!("✅ Configuration loaded. Connecting to database and message brokers...");
 
@@ -599,6 +597,8 @@ async fn main() -> anyhow::Result<()> {
     // Final checkpoint after drain so the latest counters are persisted even if
     // the periodic stats sync task was in flight during shutdown.
     final_stats_checkpoint(&db, &redis).await;
+
+    observability.shutdown();
 
     info!("👋 Goodbye!");
     

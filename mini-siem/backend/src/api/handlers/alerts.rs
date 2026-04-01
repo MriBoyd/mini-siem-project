@@ -4,8 +4,10 @@ use tokio::sync::broadcast;
 use tracing::{info, warn, error};
 
 use crate::api::server::AppState;
+use crate::monitoring::bounded_tenant_label;
 use crate::auth::jwt::Claims;
 use crate::db::cache::Cache;
+use tracing::Span;
 
 #[get("/alerts")]
 pub async fn list_alerts(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
@@ -20,6 +22,10 @@ pub async fn list_alerts(req: HttpRequest, state: web::Data<AppState>) -> impl R
     if !(roles.contains(&"analyst".to_string()) || roles.contains(&"admin".to_string())) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error":"insufficient role"}));
     }
+
+    let tenant_label = bounded_tenant_label(&claims.tenant_id);
+    Span::current().record("tenant_id", tracing::field::display(&tenant_label));
+    metrics::counter!("siem_tenant_alert_requests_total", 1, "tenant" => tenant_label.clone(), "kind" => "list");
 
     match state.db.get_recent_alerts(&claims.tenant_id, 50).await {
         Ok(alerts) => HttpResponse::Ok().json(alerts),
@@ -51,6 +57,10 @@ pub async fn ws_alerts(
         return Err(actix_web::error::ErrorForbidden("insufficient role"));
     }
 
+    let tenant_label = bounded_tenant_label(&claims.tenant_id);
+    Span::current().record("tenant_id", tracing::field::display(&tenant_label));
+    metrics::counter!("siem_tenant_alert_requests_total", 1, "tenant" => tenant_label.clone(), "kind" => "ws_connect");
+
     if claims.token_use.as_deref() == Some("ws") {
         let jti = match claims.jti.as_deref() {
             Some(jti) => jti,
@@ -75,6 +85,7 @@ pub async fn ws_alerts(
     let mut stats_rx = state.stats_tx.subscribe();
 
     info!("🔌 WebSocket connected for alerts: user={}", claims.sub);
+    let session_started = std::time::Instant::now();
 
     // Spawn a task to manage this WebSocket connection
     actix_rt::spawn(async move {
@@ -162,6 +173,7 @@ pub async fn ws_alerts(
                 else => break,
             }
         }
+        metrics::histogram!("siem_ws_session_seconds", session_started.elapsed().as_secs_f64(), "tenant" => tenant_label.clone());
         info!("🔌 WebSocket disconnected: user={}", claims.sub);
     });
 
