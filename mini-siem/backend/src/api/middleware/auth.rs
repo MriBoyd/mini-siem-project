@@ -42,28 +42,26 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        // Try Authorization header first
-        let auth_header = req.headers().get("Authorization");
-
         let mut token_opt: Option<String> = None;
 
-        if let Some(auth_str) = auth_header.and_then(|h| h.to_str().ok()) {
-            if auth_str.starts_with("Bearer ") {
-                token_opt = Some(auth_str[7..].to_string());
+        if let Some(auth_str) = req.headers().get("Authorization").and_then(|h| h.to_str().ok()) {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                token_opt = Some(token.to_string());
             }
         }
 
-        // Fallback: allow `token` query param (useful for browser WebSocket connections)
         if token_opt.is_none() {
-            if let Some(q) = req.uri().query() {
-                for pair in q.split('&') {
-                    if let Some(pos) = pair.find('=') {
-                        let (k, v) = pair.split_at(pos);
-                        if k == "token" {
-                            // v starts with '='
-                            token_opt = Some(v[1..].to_string());
-                            break;
-                        }
+            if let Some(ws_token) = req.headers().get("X-WS-Token").and_then(|h| h.to_str().ok()) {
+                token_opt = Some(ws_token.to_string());
+            }
+        }
+
+        if token_opt.is_none() {
+            if let Some(protocols) = req.headers().get("Sec-WebSocket-Protocol").and_then(|h| h.to_str().ok()) {
+                for proto in protocols.split(',').map(|p| p.trim()) {
+                    if let Some(token) = proto.strip_prefix("ws-token.") {
+                        token_opt = Some(token.to_string());
+                        break;
                     }
                 }
             }
@@ -85,6 +83,6 @@ where
             }
         }
 
-        Box::pin(ready(Err(actix_web::error::ErrorUnauthorized("Missing or invalid authorization header"))))
+        Box::pin(ready(Err(actix_web::error::ErrorUnauthorized("Missing or invalid token"))))
     }
 }

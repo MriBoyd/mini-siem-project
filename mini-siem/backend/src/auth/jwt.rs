@@ -4,6 +4,7 @@ use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey,
 use anyhow::{Result, Context};
 use std::env;
 use std::sync::OnceLock;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -11,6 +12,10 @@ pub struct Claims {
     pub tenant_id: String,
     pub email: String,
     pub roles: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_use: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
     pub exp: usize,
     pub iat: usize,
 }
@@ -62,6 +67,25 @@ pub fn create_claims(user_id: &str, tenant_id: &str, email: &str, roles: Vec<&st
         tenant_id: tenant_id.to_string(),
         email: email.to_string(),
         roles: roles.into_iter().map(|s| s.to_string()).collect(),
+        token_use: None,
+        jti: None,
+        exp,
+        iat,
+    }
+}
+
+pub fn create_ws_claims(user_id: &str, tenant_id: &str, email: &str, roles: Vec<&str>, seconds: i64) -> Claims {
+    let now = Utc::now();
+    let exp = (now + Duration::seconds(seconds)).timestamp() as usize;
+    let iat = now.timestamp() as usize;
+
+    Claims {
+        sub: user_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        email: email.to_string(),
+        roles: roles.into_iter().map(|s| s.to_string()).collect(),
+        token_use: Some("ws".to_string()),
+        jti: Some(Uuid::new_v4().to_string()),
         exp,
         iat,
     }

@@ -221,6 +221,12 @@ impl Cache for RedisCache {
         Ok(())
     }
 
+    async fn delete_key(&self, key: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.del(key).await?;
+        Ok(())
+    }
+
     async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()> {
         let mut conn = self.conn.clone();
         let _: () = conn.set(key, value).await?;

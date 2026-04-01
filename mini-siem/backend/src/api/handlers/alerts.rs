@@ -50,6 +50,25 @@ pub async fn ws_alerts(
         return Err(actix_web::error::ErrorForbidden("insufficient role"));
     }
 
+    if claims.token_use.as_deref() == Some("ws") {
+        let jti = match claims.jti.as_deref() {
+            Some(jti) => jti,
+            None => return Err(actix_web::error::ErrorUnauthorized("missing websocket token id")),
+        };
+        let token_key = format!("ws_token:{}:{}", claims.tenant_id, jti);
+        let token_value = match state.redis.get_string(&token_key).await {
+            Ok(Some(value)) => value,
+            _ => return Err(actix_web::error::ErrorUnauthorized("expired or invalid websocket token")),
+        };
+        if token_value != claims.sub {
+            return Err(actix_web::error::ErrorUnauthorized("invalid websocket token"));
+        }
+        if let Err(e) = state.redis.delete_key(&token_key).await {
+            error!("Failed to consume websocket token: {}", e);
+            return Err(actix_web::error::ErrorUnauthorized("expired or invalid websocket token"));
+        }
+    }
+
     let (res, mut session, mut msg_stream) = actix_ws::handle(&req, stream)?;
     let mut alert_rx = state.alert_tx.subscribe();
     let mut stats_rx = state.stats_tx.subscribe();

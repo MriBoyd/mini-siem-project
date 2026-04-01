@@ -4,7 +4,7 @@ use uuid::Uuid;
 use tracing::error;
 
 use crate::api::server::AppState;
-use crate::auth::{hash_password, verify_password, create_claims, encode_jwt, generate_refresh_token, TokenPair, Claims};
+use crate::auth::{hash_password, verify_password, create_claims, create_ws_claims, encode_jwt, generate_refresh_token, TokenPair, Claims};
 use crate::db::cache::Cache;
 use crate::db::models::user::{UserResponse};
 
@@ -26,6 +26,12 @@ pub struct LoginRequest {
 pub struct RefreshRequest {
     pub tenant_id: String,
     pub refresh_token: String,
+}
+
+#[derive(Serialize)]
+pub struct WsTokenResponse {
+    pub ws_token: String,
+    pub expires_in_seconds: u64,
 }
 
 #[post("/register")]
@@ -195,6 +201,41 @@ pub async fn logout(
     }
 
     HttpResponse::Ok().finish()
+}
+
+#[post("/ws-token")]
+pub async fn ws_token(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let claims = {
+        let exts = req.extensions();
+        match exts.get::<Claims>().cloned() {
+            Some(c) => c,
+            None => return HttpResponse::Unauthorized().finish(),
+        }
+    };
+
+    let ws_claims = create_ws_claims(&claims.sub, &claims.tenant_id, &claims.email, claims.roles.iter().map(|s| s.as_str()).collect(), 60);
+    let jti = ws_claims.jti.clone().unwrap_or_default();
+    let ws_token = match encode_jwt(&ws_claims) {
+        Ok(t) => t,
+        Err(e) => {
+            error!("JWT error: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Internal server error"}));
+        }
+    };
+
+    let token_key = format!("ws_token:{}:{}", claims.tenant_id, jti);
+    if let Err(e) = state.redis.set_string(&token_key, &claims.sub, Some(60)).await {
+        error!("Redis error storing websocket token: {}", e);
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Internal server error"}));
+    }
+
+    HttpResponse::Ok().json(WsTokenResponse {
+        ws_token,
+        expires_in_seconds: 60,
+    })
 }
 
 #[get("/me")]
