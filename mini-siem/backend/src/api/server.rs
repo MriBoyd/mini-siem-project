@@ -4,7 +4,7 @@ use tracing::info;
 use std::sync::Arc;
 use tokio::sync::{mpsc, broadcast};
 
-use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules, audit};
+use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules, audit, compliance};
 use crate::api::middleware::{auth::JwtAuth, telemetry::RequestTelemetry};
 use crate::db::PostgresDb;
 use crate::db::redis::RedisCache;
@@ -95,6 +95,11 @@ pub async fn run_server(state: web::Data<AppState>, cors_allowed_origins: Vec<St
                     .service(rules::delete_rule)
                     .service(rules::toggle_rule)
                         .service(audit::list_audit_events)
+                    .service(compliance::get_policy)
+                    .service(compliance::update_policy)
+                    .service(compliance::record_key_rotation)
+                    .service(compliance::access_review)
+                    .service(compliance::evidence_bundle)
                     .service(web::resource("/ws/alerts").route(web::get().to(alerts::ws_alerts)))
             )
     })

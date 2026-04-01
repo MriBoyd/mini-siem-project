@@ -125,6 +125,20 @@ impl ElasticClient {
             Err(anyhow::anyhow!("delete index failed: {} - {}", status, txt))
         }
     }
+
+    /// Delete documents matching a query from the given index.
+    pub async fn delete_by_query(&self, index: &str, query: Value) -> Result<()> {
+        let url = format!("{}/{}/_delete_by_query?refresh=true", self.base_url, index);
+        let body = serde_json::json!({ "query": query });
+        let res = self.client.post(&url).json(&body).send().await?;
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            let status = res.status();
+            let txt = res.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!("delete_by_query failed: {} - {}", status, txt))
+        }
+    }
 }
 
 #[cfg(test)]

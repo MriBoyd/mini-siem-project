@@ -9,6 +9,7 @@ use crate::types::{Alert, Log};
 use crate::db::models::user::User;
 use crate::db::models::rule::{DetectionRule, RuleCreate};
 use crate::db::models::audit::AuditEvent;
+use crate::db::models::compliance::TenantCompliancePolicy;
 use crate::db::cache::Cache;
 use serde_json::Value;
 use crate::auth::password::hash_password;
@@ -437,6 +438,17 @@ impl PostgresDb {
         Ok(user)
     }
 
+    pub async fn list_users_by_tenant(&self, tenant_id: &str) -> Result<Vec<User>> {
+        let users = sqlx::query_as::<_, User>(
+            "SELECT id, tenant_id, email, password_hash, role, created_at, updated_at FROM users WHERE tenant_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(users)
+    }
+
     // Rules management
     pub async fn get_all_rules(&self, tenant_id: &str) -> Result<Vec<DetectionRule>> {
         let query = if tenant_id.is_empty() {
@@ -600,6 +612,120 @@ impl PostgresDb {
         )
         .bind(tenant_id)
         .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn list_audit_events_since(&self, tenant_id: &str, since: DateTime<Utc>) -> Result<Vec<AuditEvent>> {
+        let rows: Vec<AuditEvent> = query_as(
+            r#"
+            SELECT id, tenant_id, actor_user_id, actor_email, actor_roles, action, resource_type,
+                   resource_id, target_tenant_id, request_id, metadata, previous_hash, event_hash,
+                   signature, created_at
+            FROM audit_events
+            WHERE tenant_id = $1 AND created_at >= $2
+            ORDER BY created_at DESC, id DESC
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn purge_audit_events_before(&self, tenant_id: &str, cutoff: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM audit_events WHERE tenant_id = $1 AND created_at < $2",
+        )
+        .bind(tenant_id)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn purge_alerts_before(&self, tenant_id: &str, cutoff: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM alerts WHERE tenant_id = $1 AND created_at < $2",
+        )
+        .bind(tenant_id)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn get_tenant_compliance_policy(&self, tenant_id: &str) -> Result<TenantCompliancePolicy> {
+        let policy = sqlx::query_as::<_, TenantCompliancePolicy>(
+            r#"
+            SELECT tenant_id, retention_days, legal_hold, legal_hold_reason, legal_hold_until,
+                   access_review_interval_days, key_rotation_interval_days, last_key_rotation_at,
+                   evidence_export_enabled, updated_at
+            FROM tenant_compliance_policies
+            WHERE tenant_id = $1
+            "#,
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(policy.unwrap_or_else(|| TenantCompliancePolicy::default_for_tenant(tenant_id)))
+    }
+
+    pub async fn upsert_tenant_compliance_policy(&self, policy: &TenantCompliancePolicy) -> Result<TenantCompliancePolicy> {
+        let record = sqlx::query_as::<_, TenantCompliancePolicy>(
+            r#"
+            INSERT INTO tenant_compliance_policies (
+                tenant_id, retention_days, legal_hold, legal_hold_reason, legal_hold_until,
+                access_review_interval_days, key_rotation_interval_days, last_key_rotation_at,
+                evidence_export_enabled, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                retention_days = EXCLUDED.retention_days,
+                legal_hold = EXCLUDED.legal_hold,
+                legal_hold_reason = EXCLUDED.legal_hold_reason,
+                legal_hold_until = EXCLUDED.legal_hold_until,
+                access_review_interval_days = EXCLUDED.access_review_interval_days,
+                key_rotation_interval_days = EXCLUDED.key_rotation_interval_days,
+                last_key_rotation_at = EXCLUDED.last_key_rotation_at,
+                evidence_export_enabled = EXCLUDED.evidence_export_enabled,
+                updated_at = NOW()
+            RETURNING tenant_id, retention_days, legal_hold, legal_hold_reason, legal_hold_until,
+                      access_review_interval_days, key_rotation_interval_days, last_key_rotation_at,
+                      evidence_export_enabled, updated_at
+            "#,
+        )
+        .bind(&policy.tenant_id)
+        .bind(policy.retention_days)
+        .bind(policy.legal_hold)
+        .bind(&policy.legal_hold_reason)
+        .bind(policy.legal_hold_until)
+        .bind(policy.access_review_interval_days)
+        .bind(policy.key_rotation_interval_days)
+        .bind(policy.last_key_rotation_at)
+        .bind(policy.evidence_export_enabled)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(record)
+    }
+
+    pub async fn list_tenant_compliance_policies(&self) -> Result<Vec<TenantCompliancePolicy>> {
+        let rows = query_as::<_, TenantCompliancePolicy>(
+            r#"
+            SELECT tenant_id, retention_days, legal_hold, legal_hold_reason, legal_hold_until,
+                   access_review_interval_days, key_rotation_interval_days, last_key_rotation_at,
+                   evidence_export_enabled, updated_at
+            FROM tenant_compliance_policies
+            ORDER BY tenant_id ASC
+            "#,
+        )
         .fetch_all(&self.pool)
         .await?;
 

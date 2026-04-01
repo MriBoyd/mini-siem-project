@@ -13,6 +13,7 @@ use mini_siem::response::actions::WebhookAction;
 use mini_siem::{api, types, detection, alerting, config, auth};
 use rustc_hash::FxHasher;
 use std::time::{Duration, Instant};
+use chrono::Utc;
 
 struct ManagedTask {
     name: &'static str,
@@ -69,6 +70,62 @@ async fn final_stats_checkpoint(db: &Arc<PostgresDb>, redis: &RedisCache) {
         error!("Failed to persist final stats checkpoint: {}", e);
     } else {
         info!("✅ Final stats checkpoint persisted");
+    }
+}
+
+async fn run_tenant_retention_cycle(
+    db: &Arc<PostgresDb>,
+    elastic: &tokio::sync::watch::Receiver<Option<Arc<mini_siem::db::ElasticClient>>>,
+    elastic_index: &str,
+) {
+    let policies = match db.list_tenant_compliance_policies().await {
+        Ok(policies) => policies,
+        Err(e) => {
+            error!("Failed to load tenant compliance policies: {}", e);
+            return;
+        }
+    };
+
+    for policy in policies {
+        let hold_active = if policy.legal_hold {
+            if let Some(until) = policy.legal_hold_until {
+                until > Utc::now()
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        if hold_active {
+            continue;
+        }
+
+        let retention_days = policy.retention_days.max(1) as i64;
+        let cutoff = Utc::now() - chrono::Duration::days(retention_days);
+
+        if let Err(e) = db.purge_audit_events_before(&policy.tenant_id, cutoff).await {
+            error!(tenant = %policy.tenant_id, "Failed to purge old audit events: {}", e);
+        }
+
+        if let Err(e) = db.purge_alerts_before(&policy.tenant_id, cutoff).await {
+            error!(tenant = %policy.tenant_id, "Failed to purge old alerts: {}", e);
+        }
+
+        let elastic_client = { elastic.borrow().clone() };
+        if let Some(elastic_client) = elastic_client {
+            let query = serde_json::json!({
+                "bool": {
+                    "filter": [
+                        { "term": { "tenant_id": policy.tenant_id } },
+                        { "range": { "@timestamp": { "lt": cutoff.to_rfc3339() } } }
+                    ]
+                }
+            });
+            if let Err(e) = elastic_client.delete_by_query(elastic_index, query).await {
+                error!(tenant = %policy.tenant_id, "Failed to purge old indexed logs: {}", e);
+            }
+        }
     }
 }
 
@@ -560,6 +617,26 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     task_registry.push("stats_sync", stats_sync_handle);
+
+    let db_clone_for_retention = db.clone();
+    let elastic_rx_for_retention = elastic_rx.clone();
+    let elastic_index_for_retention = elastic_index.clone();
+    let mut retention_shutdown_rx = shutdown_tx.subscribe();
+    let retention_handle = task::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    run_tenant_retention_cycle(&db_clone_for_retention, &elastic_rx_for_retention, &elastic_index_for_retention).await;
+                }
+                _ = retention_shutdown_rx.recv() => {
+                    info!("🛑 Tenant retention worker received shutdown");
+                    break;
+                }
+            }
+        }
+    });
+    task_registry.push("tenant_retention", retention_handle);
 
     info!("✅ Mini SIEM fully initialized");
     info!("📡 API: http://{}", cfg.api_bind);
