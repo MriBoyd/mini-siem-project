@@ -33,6 +33,8 @@ async fn main() -> anyhow::Result<()> {
     let detection_workers = cfg.detection_workers.max(1);
     let detection_mailbox_size = cfg.detection_mailbox_size.max(1);
     let detection_partition_key = cfg.detection_partition_key.clone();
+    let kafka_lag_sample_interval_secs = cfg.kafka_lag_sample_interval_secs.max(1);
+    let kafka_lag_watermark_timeout_ms = cfg.kafka_lag_watermark_timeout_ms.max(1);
 
     info!("✅ Configuration loaded. Connecting to database and message brokers...");
 
@@ -84,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     ).await);
     info!("🧠 Detection worker pool: {} workers, mailbox size {}", detection_workers, detection_mailbox_size);
     info!("🧠 Detection partition key: {}", detection_partition_key);
+    info!("📈 Kafka lag sampling: every {}s, watermark timeout {}ms", kafka_lag_sample_interval_secs, kafka_lag_watermark_timeout_ms);
 
     let mut detection_worker_senders = Vec::with_capacity(detection_workers);
     let mut detection_worker_handles = Vec::with_capacity(detection_workers);
@@ -238,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
             }
         })
     };
-    let kafka_lag_metrics_handle = kafka.spawn_partition_lag_metrics_task(5, 500);
+    let kafka_lag_metrics_handle = kafka.spawn_partition_lag_metrics_task(kafka_lag_sample_interval_secs, kafka_lag_watermark_timeout_ms);
 
     // Spawn Elasticsearch indexer worker: batch documents for bulk indexing
     let mut elastic_rx_for_indexer = elastic_rx.clone();

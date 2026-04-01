@@ -13,6 +13,8 @@ pub struct Config {
     pub detection_workers: usize,
     pub detection_mailbox_size: usize,
     pub detection_partition_key: String,
+    pub kafka_lag_sample_interval_secs: u64,
+    pub kafka_lag_watermark_timeout_ms: u64,
     pub kafka_pause_on_full: bool,
     pub kafka_pause_timeout_ms: u64,
     pub rate_limit_per_ip: usize,
@@ -54,6 +56,12 @@ impl Config {
             .unwrap_or(2048);
         let detection_partition_key = env::var("DETECTION_PARTITION_KEY")
             .unwrap_or_else(|_| "tenant_source_ip".to_string());
+        let kafka_lag_sample_interval_secs = env::var("KAFKA_LAG_SAMPLE_INTERVAL_SECS").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
+        let kafka_lag_watermark_timeout_ms = env::var("KAFKA_LAG_WATERMARK_TIMEOUT_MS").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500);
         let kafka_pause_on_full = env::var("KAFKA_PAUSE_ON_FULL").ok()
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(true);
@@ -83,6 +91,8 @@ impl Config {
             detection_workers,
             detection_mailbox_size,
             detection_partition_key,
+            kafka_lag_sample_interval_secs,
+            kafka_lag_watermark_timeout_ms,
             kafka_pause_on_full,
             kafka_pause_timeout_ms,
             rate_limit_per_ip,
