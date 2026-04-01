@@ -6,6 +6,7 @@ use std::fmt;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Log {
     pub id: Uuid,
+    pub tenant_id: String,
     pub timestamp: DateTime<Utc>,
     pub event_type: String,
     pub source_ip: String,
@@ -44,6 +45,7 @@ impl fmt::Display for LogSeverity {
 #[allow(dead_code)]
 impl Log {
     pub fn new(
+        tenant_id: String,
         event_type: String,
         source_ip: String,
         message: String,
@@ -51,6 +53,7 @@ impl Log {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
+            tenant_id,
             timestamp: now,
             event_type,
             source_ip,
@@ -85,6 +88,7 @@ mod tests {
         let now = Utc::now();
         Log {
             id: Uuid::new_v4(),
+            tenant_id: "tenant-1".to_string(),
             timestamp: now,
             event_type: event_type.to_string(),
             source_ip: "127.0.0.1".to_string(),

@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: String,    // user_id
+    pub tenant_id: String,
     pub email: String,
     pub roles: Vec<String>,
     pub exp: usize,
@@ -51,13 +52,14 @@ fn get_decoding_key() -> Result<&'static DecodingKey> {
     Ok(DECODING_KEY.get_or_init(|| key))
 }
 
-pub fn create_claims(user_id: &str, email: &str, roles: Vec<&str>, minutes: i64) -> Claims {
+pub fn create_claims(user_id: &str, tenant_id: &str, email: &str, roles: Vec<&str>, minutes: i64) -> Claims {
     let now = Utc::now();
     let exp = (now + Duration::minutes(minutes)).timestamp() as usize;
     let iat = now.timestamp() as usize;
     
     Claims {
         sub: user_id.to_string(),
+        tenant_id: tenant_id.to_string(),
         email: email.to_string(),
         roles: roles.into_iter().map(|s| s.to_string()).collect(),
         exp,

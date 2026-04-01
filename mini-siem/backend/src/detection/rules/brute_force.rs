@@ -6,6 +6,7 @@ use crate::db::Cache;
 use super::Rule;
 
 pub struct BruteForceRule {
+    tenant_id: String,
     name: String,
     id: String,
     threshold: u32,
@@ -15,6 +16,7 @@ pub struct BruteForceRule {
 
 impl BruteForceRule {
     pub fn new(
+        tenant_id: String,
         id: String,
         name: String,
         threshold: u32,
@@ -22,6 +24,7 @@ impl BruteForceRule {
         redis: Arc<dyn Cache>,
     ) -> Self {
         Self {
+            tenant_id,
             name,
             id,
             threshold,
@@ -40,6 +43,10 @@ impl Rule for BruteForceRule {
     fn id(&self) -> &str {
         &self.id
     }
+
+    fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
     fn log_types(&self) -> Vec<crate::types::LogTag> {
         vec![crate::types::LogTag::Auth]
     }
@@ -56,6 +63,7 @@ impl Rule for BruteForceRule {
         let count = self.redis.increment_counter(&key, self.window_seconds as u64).await?;
         if count >= self.threshold {
             Ok(Some(Alert::new(
+                log.tenant_id.clone(),
                 self.id.clone(),
                 self.name.clone(),
                 AlertSeverity::High,

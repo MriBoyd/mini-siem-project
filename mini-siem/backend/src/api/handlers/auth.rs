@@ -10,18 +10,21 @@ use crate::db::models::user::{UserResponse};
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
+    pub tenant_id: String,
     pub email: String,
     pub password: String,
 }
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
+    pub tenant_id: String,
     pub email: String,
     pub password: String,
 }
 
 #[derive(Deserialize)]
 pub struct RefreshRequest {
+    pub tenant_id: String,
     pub refresh_token: String,
 }
 
@@ -45,7 +48,7 @@ pub async fn register(
     }
 
     // Check pre-existence (optional optimization)
-    match state.db.get_user_by_email(&req.email).await {
+    match state.db.get_user_by_email(&req.tenant_id, &req.email).await {
         Ok(Some(_)) => return HttpResponse::Conflict().json(serde_json::json!({"error": "User already exists"})),
         Err(e) => {
             error!("Database error: {}", e);
@@ -62,7 +65,7 @@ pub async fn register(
         }
     };
 
-    match state.db.create_user(&req.email, &password_hash, "user").await {
+    match state.db.create_user(&req.tenant_id, &req.email, &password_hash, "user").await {
         Ok(user) => HttpResponse::Created().json(UserResponse::from(user)),
         Err(e) => {
             // Check for unique constraint violation
@@ -90,7 +93,7 @@ pub async fn login(
         _ => {}
     }
 
-    let user = match state.db.get_user_by_email(&req.email).await {
+    let user = match state.db.get_user_by_email(&req.tenant_id, &req.email).await {
         Ok(Some(u)) => u,
         Ok(None) => return HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid credentials"})),
         Err(e) => {
@@ -104,7 +107,7 @@ pub async fn login(
         _ => return HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid credentials"})),
     }
 
-    let claims = create_claims(&user.id.to_string(), &user.email, vec![&user.role], 15);
+    let claims = create_claims(&user.id.to_string(), &user.tenant_id, &user.email, vec![&user.role], 15);
     let access_token = match encode_jwt(&claims) {
         Ok(t) => t,
         Err(e) => {
@@ -115,7 +118,7 @@ pub async fn login(
 
     let refresh_token = generate_refresh_token();
     
-    if let Err(e) = state.redis.store_refresh_token(&user.id.to_string(), &refresh_token, 7 * 24 * 3600).await {
+    if let Err(e) = state.redis.store_refresh_token(&user.id.to_string(), &user.tenant_id, &refresh_token, 7 * 24 * 3600).await {
         error!("Redis error storing refresh token: {}", e);
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Internal server error"}));
     }
@@ -140,12 +143,13 @@ pub async fn refresh(
         }
     };
 
-    let user_id = match Uuid::parse_str(&user_id_str) {
+    let user_id_part = user_id_str.rsplit_once(':').map(|(_, user_id)| user_id).unwrap_or(&user_id_str);
+    let user_id = match Uuid::parse_str(user_id_part) {
         Ok(id) => id,
         Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Internal server error"})),
     };
 
-    let user = match state.db.get_user_by_id(user_id).await {
+    let user = match state.db.get_user_by_id(&req.tenant_id, user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => return HttpResponse::Unauthorized().finish(),
         Err(e) => {
@@ -158,7 +162,7 @@ pub async fn refresh(
     let _ = state.redis.revoke_refresh_token(&req.refresh_token).await;
 
     // Generate new pair
-    let claims = create_claims(&user.id.to_string(), &user.email, vec![&user.role], 15);
+    let claims = create_claims(&user.id.to_string(), &user.tenant_id, &user.email, vec![&user.role], 15);
     let access_token = match encode_jwt(&claims) {
         Ok(t) => t,
         Err(e) => {
@@ -169,7 +173,7 @@ pub async fn refresh(
 
     let new_refresh_token = generate_refresh_token();
     
-    if let Err(e) = state.redis.store_refresh_token(&user.id.to_string(), &new_refresh_token, 7 * 24 * 3600).await {
+    if let Err(e) = state.redis.store_refresh_token(&user.id.to_string(), &user.tenant_id, &new_refresh_token, 7 * 24 * 3600).await {
         error!("Redis error: {}", e);
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Internal server error"}));
     }
@@ -209,7 +213,7 @@ pub async fn me(
         Err(_) => return HttpResponse::Unauthorized().finish(),
     };
 
-    match state.db.get_user_by_id(user_id).await {
+    match state.db.get_user_by_id(&claims.tenant_id, user_id).await {
         Ok(Some(user)) => HttpResponse::Ok().json(UserResponse::from(user)),
         Ok(None) => HttpResponse::NotFound().finish(),
         Err(e) => {

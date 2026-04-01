@@ -360,7 +360,7 @@ async fn main() -> anyhow::Result<()> {
             let active_alerts = redis_clone_for_stats.get_counter("siem:stats:active_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
             let critical_alerts = redis_clone_for_stats.get_counter("siem:stats:critical_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
 
-            if let Err(e) = db_clone_for_stats.save_stats(total_logs, total_alerts, active_alerts, critical_alerts).await {
+            if let Err(e) = db_clone_for_stats.save_stats("", total_logs, total_alerts, active_alerts, critical_alerts).await {
                 error!("Failed to persist aggregated stats to DB: {}", e);
             }
         }

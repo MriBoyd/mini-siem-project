@@ -6,6 +6,7 @@ use sqlx::FromRow;
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
 pub struct DetectionRule {
     pub id: Uuid,
+    pub tenant_id: String,
     pub name: String,
     pub description: Option<String>,
     pub rule_type: String,
@@ -20,6 +21,7 @@ pub struct DetectionRule {
 
 #[derive(Debug, Deserialize)]
 pub struct RuleCreate {
+    pub tenant_id: String,
     pub name: String,
     pub description: Option<String>,
     pub rule_type: String,

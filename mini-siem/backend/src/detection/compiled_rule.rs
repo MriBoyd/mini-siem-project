@@ -33,6 +33,16 @@ impl CompiledRule {
         }
     }
 
+    pub fn tenant_id(&self) -> &str {
+        match self {
+            CompiledRule::BruteForce(r) => r.tenant_id(),
+            CompiledRule::PortScan(r) => r.tenant_id(),
+            CompiledRule::Malware(r) => r.tenant_id(),
+            CompiledRule::Generic(r) => r.tenant_id(),
+            CompiledRule::Correlation(r) => r.tenant_id(),
+        }
+    }
+
     pub async fn evaluate(&self, log: &Log) -> Result<Option<Alert>> {
         // Time rule execution and export to metrics
         let start = std::time::Instant::now();

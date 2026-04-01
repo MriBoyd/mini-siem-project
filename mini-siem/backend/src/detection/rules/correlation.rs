@@ -33,6 +33,7 @@ struct CorrelationState {
 }
 
 pub struct CorrelationRule {
+    pub tenant_id: String,
     pub id: String,
     pub name: String,
     pub severity: AlertSeverity,
@@ -42,6 +43,7 @@ pub struct CorrelationRule {
 
 impl CorrelationRule {
     pub fn new(
+        tenant_id: String,
         id: String,
         name: String,
         severity: String,
@@ -56,6 +58,7 @@ impl CorrelationRule {
             _ => AlertSeverity::Info,
         };
         Self {
+            tenant_id,
             id,
             name,
             severity: sev,
@@ -90,6 +93,10 @@ impl Rule for CorrelationRule {
         &self.id
     }
 
+    fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+
     fn log_types(&self) -> Vec<LogTag> {
         // Correlation rules are broad
         vec![LogTag::Auth, LogTag::Network, LogTag::Malware] 
@@ -101,7 +108,7 @@ impl Rule for CorrelationRule {
              return Ok(None);
         }
         
-        let redis_key = format!("cep:{}:{}", self.id, group_key);
+        let redis_key = format!("cep:{}:{}:{}", log.tenant_id, self.id, group_key);
         
         // 1. Fetch State
         let mut state = if let Some(state_json) = self.redis.get_string(&redis_key).await? {
@@ -153,6 +160,7 @@ impl Rule for CorrelationRule {
 
                          return Ok(Some(Alert {
                             id: Uuid::new_v4(),
+                            tenant_id: log.tenant_id.clone(),
                             rule_id: self.id.clone(),
                             rule_name: self.name.clone(),
                             severity: self.severity,

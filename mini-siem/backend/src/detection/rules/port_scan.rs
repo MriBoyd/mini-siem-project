@@ -7,6 +7,7 @@ use super::Rule;
 
 #[allow(dead_code)]
 pub struct PortScanRule {
+    tenant_id: String,
     id: String,
     name: String,
     port_threshold: u32,
@@ -16,13 +17,14 @@ pub struct PortScanRule {
 
 impl PortScanRule {
     pub fn new(
+        tenant_id: String,
         id: String,
         name: String,
         port_threshold: u32,
         window_seconds: i64,
         redis: Arc<dyn Cache>,
     ) -> Self {
-        Self { id, name, port_threshold, window_seconds, redis }
+        Self { tenant_id, id, name, port_threshold, window_seconds, redis }
     }
 }
 
@@ -30,6 +32,7 @@ impl PortScanRule {
 impl Rule for PortScanRule {
     fn name(&self) -> &str { &self.name }
     fn id(&self) -> &str { &self.id }
+    fn tenant_id(&self) -> &str { &self.tenant_id }
     fn log_types(&self) -> Vec<crate::types::LogTag> {
         vec![crate::types::LogTag::Network]
     }

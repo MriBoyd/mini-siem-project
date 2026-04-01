@@ -1,4 +1,4 @@
-use actix_web::{post, web, HttpResponse, Responder};
+use actix_web::{post, web, HttpResponse, Responder, HttpRequest, HttpMessage};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{Utc, DateTime};
@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use crate::api::server::AppState;
 use crate::db::cache::Cache;
+use crate::auth::jwt::Claims;
 use crate::types::{Log, LogSeverity};
 use serde_json::Value;
 
@@ -29,15 +30,22 @@ pub struct IngestLogResponse {
 
 #[post("/api/v1/logs/ingest")]
 pub async fn ingest_log(
+    req_head: HttpRequest,
     req: web::Json<IngestLogRequest>,
     state: web::Data<AppState>,
 ) -> impl Responder {
+    let claims = match req_head.extensions().get::<Claims>().cloned() {
+        Some(c) => c,
+        None => return HttpResponse::Unauthorized().body("missing auth"),
+    };
+
     let log_id = Uuid::new_v4();
     let now = Utc::now();
     
     // Create log object
     let log = Log {
         id: log_id,
+        tenant_id: claims.tenant_id.clone(),
         timestamp: req.timestamp.unwrap_or(now),
         event_type: req.event_type.clone(),
         source_ip: req.source_ip.clone(),
@@ -64,15 +72,17 @@ pub async fn ingest_log(
     info!("📥 Received log {} from {}", log_id, req.source_ip);
     
     // Update Redis counter for total logs and publish aggregated stats (best-effort)
-    if let Ok(_) = state.redis.increment_counter("siem:stats:total_logs", 86400).await {
+    let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);
+    if let Ok(_) = state.redis.increment_counter(&format!("{}:total_logs", tenant_prefix), 86400).await {
         // Try to read counters from Redis (L1 cache will be used if available)
-        let total_logs: Option<u32> = state.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
-        let total_alerts: Option<u32> = state.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
-        let active_alerts: Option<u32> = state.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
-        let critical_alerts: Option<u32> = state.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
+        let total_logs: Option<u32> = state.redis.get_counter(&format!("{}:total_logs", tenant_prefix)).await.ok().flatten();
+        let total_alerts: Option<u32> = state.redis.get_counter(&format!("{}:total_alerts", tenant_prefix)).await.ok().flatten();
+        let active_alerts: Option<u32> = state.redis.get_counter(&format!("{}:active_alerts", tenant_prefix)).await.ok().flatten();
+        let critical_alerts: Option<u32> = state.redis.get_counter(&format!("{}:critical_alerts", tenant_prefix)).await.ok().flatten();
 
         if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (total_logs, total_alerts, active_alerts, critical_alerts) {
             let stats = crate::types::DashboardStats {
+                tenant_id: claims.tenant_id.clone(),
                 total_logs: tl as i64,
                 total_alerts: ta as i64,
                 active_alerts: aa as i64,
@@ -81,14 +91,14 @@ pub async fn ingest_log(
             let _ = state.stats_tx.send(stats);
         } else {
             // Fallback: compute from DB and seed Redis
-            if let Ok((tl, ta, aa, ca)) = state.db.get_stats().await {
+            if let Ok((tl, ta, aa, ca)) = state.db.get_stats(&claims.tenant_id).await {
                 let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
                 let _ = state.stats_tx.send(stats.clone());
                 // Seed Redis counters (best-effort)
-                let _ = state.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
-                let _ = state.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
-                let _ = state.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
-                let _ = state.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
+                let _ = state.redis.set_counter(&format!("{}:total_logs", tenant_prefix), tl as u64, Some(86400)).await;
+                let _ = state.redis.set_counter(&format!("{}:total_alerts", tenant_prefix), ta as u64, Some(86400)).await;
+                let _ = state.redis.set_counter(&format!("{}:active_alerts", tenant_prefix), aa as u64, Some(86400)).await;
+                let _ = state.redis.set_counter(&format!("{}:critical_alerts", tenant_prefix), ca as u64, Some(86400)).await;
             }
         }
     }
@@ -101,12 +111,17 @@ pub async fn ingest_log(
 }
 
 #[actix_web::get("/api/v1/logs/recent")]
-pub async fn recent_logs(state: web::Data<AppState>) -> impl Responder {
+pub async fn recent_logs(req_head: HttpRequest, state: web::Data<AppState>) -> impl Responder {
     // Return recent logs from Elasticsearch for UI compatibility.
+    let claims = match req_head.extensions().get::<Claims>().cloned() {
+        Some(c) => c,
+        None => return HttpResponse::Unauthorized().body("missing auth"),
+    };
+
     if let Some(el) = state.elastic.borrow().clone() {
-        let q = serde_json::json!({ "match_all": {} });
         let index_name = std::env::var("ELASTICSEARCH_INDEX").unwrap_or_else(|_| "mini-siem-logs".to_string());
-        match el.as_ref().search(&index_name, q, 0, 50).await {
+        let query = serde_json::json!({ "term": { "tenant_id": claims.tenant_id } });
+        match el.as_ref().search(&index_name, query, 0, 50).await {
             Ok(v) => {
                 // extract hits -> _source using JSON pointer
                 let mut res: Vec<Value> = Vec::new();
@@ -136,9 +151,15 @@ pub struct BatchIngestRequest {
 
 #[post("/api/v1/logs/batch")]
 pub async fn ingest_batch(
+    req_head: HttpRequest,
     req: web::Json<BatchIngestRequest>,
     state: web::Data<AppState>,
 ) -> impl Responder {
+    let claims = match req_head.extensions().get::<Claims>().cloned() {
+        Some(c) => c,
+        None => return HttpResponse::Unauthorized().body("missing auth"),
+    };
+
     let now = Utc::now();
     let mut responses = Vec::with_capacity(req.logs.len());
     
@@ -146,6 +167,7 @@ pub async fn ingest_batch(
         let log_id = Uuid::new_v4();
         let log = Log {
             id: log_id,
+            tenant_id: claims.tenant_id.clone(),
             timestamp: log_req.timestamp.unwrap_or(now),
             event_type: log_req.event_type.clone(),
             source_ip: log_req.source_ip.clone(),
@@ -174,31 +196,33 @@ pub async fn ingest_batch(
     info!("📦 Accepted batch of {} logs", responses.len());
     // Update Redis counter for total logs in one operation and publish aggregated stats (best-effort)
     if responses.len() > 0 {
-        let _ = state.redis.incr_by("siem:stats:total_logs", responses.len() as u64, 86400).await;
+        let _ = state.redis.incr_by(&format!("siem:tenant:{}:stats:total_logs", claims.tenant_id), responses.len() as u64, 86400).await;
     }
 
     // Try to read counters from Redis
-    let total_logs: Option<u32> = state.redis.get_counter("siem:stats:total_logs").await.ok().flatten();
-    let total_alerts: Option<u32> = state.redis.get_counter("siem:stats:total_alerts").await.ok().flatten();
-    let active_alerts: Option<u32> = state.redis.get_counter("siem:stats:active_alerts").await.ok().flatten();
-    let critical_alerts: Option<u32> = state.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten();
+    let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);
+    let total_logs: Option<u32> = state.redis.get_counter(&format!("{}:total_logs", tenant_prefix)).await.ok().flatten();
+    let total_alerts: Option<u32> = state.redis.get_counter(&format!("{}:total_alerts", tenant_prefix)).await.ok().flatten();
+    let active_alerts: Option<u32> = state.redis.get_counter(&format!("{}:active_alerts", tenant_prefix)).await.ok().flatten();
+    let critical_alerts: Option<u32> = state.redis.get_counter(&format!("{}:critical_alerts", tenant_prefix)).await.ok().flatten();
 
     if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (total_logs, total_alerts, active_alerts, critical_alerts) {
         let stats = crate::types::DashboardStats {
+            tenant_id: claims.tenant_id.clone(),
             total_logs: tl as i64,
             total_alerts: ta as i64,
             active_alerts: aa as i64,
             critical_alerts: ca as i64,
         };
         let _ = state.stats_tx.send(stats);
-    } else if let Ok((tl, ta, aa, ca)) = state.db.get_stats().await {
+    } else if let Ok((tl, ta, aa, ca)) = state.db.get_stats(&claims.tenant_id).await {
         let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
         let _ = state.stats_tx.send(stats.clone());
         // Seed Redis (best-effort)
-        let _ = state.redis.set_counter("siem:stats:total_logs", tl as u64, Some(86400)).await;
-        let _ = state.redis.set_counter("siem:stats:total_alerts", ta as u64, Some(86400)).await;
-        let _ = state.redis.set_counter("siem:stats:active_alerts", aa as u64, Some(86400)).await;
-        let _ = state.redis.set_counter("siem:stats:critical_alerts", ca as u64, Some(86400)).await;
+        let _ = state.redis.set_counter(&format!("{}:total_logs", tenant_prefix), tl as u64, Some(86400)).await;
+        let _ = state.redis.set_counter(&format!("{}:total_alerts", tenant_prefix), ta as u64, Some(86400)).await;
+        let _ = state.redis.set_counter(&format!("{}:active_alerts", tenant_prefix), aa as u64, Some(86400)).await;
+        let _ = state.redis.set_counter(&format!("{}:critical_alerts", tenant_prefix), ca as u64, Some(86400)).await;
     }
     HttpResponse::Accepted().json(responses)
 }

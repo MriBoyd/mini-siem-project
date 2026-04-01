@@ -18,12 +18,11 @@ pub async fn get_stats(req: HttpRequest, state: web::Data<AppState>) -> impl Res
         return HttpResponse::Forbidden().json(serde_json::json!({"error":"insufficient role"}));
     }
 
-    // Prefer fast in-memory (L1) backed Redis counters for dashboard responsiveness.
-    // Fall back to the persisted Postgres singleton (`system_stats`) if Redis doesn't have values yet.
-    let maybe_total_logs: Option<i64> = state.redis.get_counter("siem:stats:total_logs").await.ok().flatten().map(|v| v as i64);
-    let maybe_total_alerts: Option<i64> = state.redis.get_counter("siem:stats:total_alerts").await.ok().flatten().map(|v| v as i64);
-    let maybe_active_alerts: Option<i64> = state.redis.get_counter("siem:stats:active_alerts").await.ok().flatten().map(|v| v as i64);
-    let maybe_critical_alerts: Option<i64> = state.redis.get_counter("siem:stats:critical_alerts").await.ok().flatten().map(|v| v as i64);
+    let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);
+    let maybe_total_logs: Option<i64> = state.redis.get_counter(&format!("{}:total_logs", tenant_prefix)).await.ok().flatten().map(|v| v as i64);
+    let maybe_total_alerts: Option<i64> = state.redis.get_counter(&format!("{}:total_alerts", tenant_prefix)).await.ok().flatten().map(|v| v as i64);
+    let maybe_active_alerts: Option<i64> = state.redis.get_counter(&format!("{}:active_alerts", tenant_prefix)).await.ok().flatten().map(|v| v as i64);
+    let maybe_critical_alerts: Option<i64> = state.redis.get_counter(&format!("{}:critical_alerts", tenant_prefix)).await.ok().flatten().map(|v| v as i64);
 
     if let (Some(total_logs), Some(total_alerts), Some(active_alerts), Some(critical_alerts)) = (
         maybe_total_logs,
@@ -32,6 +31,7 @@ pub async fn get_stats(req: HttpRequest, state: web::Data<AppState>) -> impl Res
         maybe_critical_alerts,
     ) {
         return HttpResponse::Ok().json(serde_json::json!({
+            "tenant_id": claims.tenant_id,
             "total_logs": total_logs,
             "total_alerts": total_alerts,
             "active_alerts": active_alerts,
@@ -39,16 +39,17 @@ pub async fn get_stats(req: HttpRequest, state: web::Data<AppState>) -> impl Res
         }));
     }
 
-    // Fallback: read persisted snapshot from Postgres and seed Redis for faster subsequent reads.
-    match state.db.get_stats().await {
+    // Fallback: use persisted snapshot for this tenant if available.
+    match state.db.get_stats(&claims.tenant_id).await {
         Ok((total_logs, total_alerts, active_alerts, critical_alerts)) => {
             // Best-effort: seed Redis counters so L1/cache path picks them up quickly.
-            let _ = state.redis.set_counter("siem:stats:total_logs", total_logs as u64, Some(86400)).await;
-            let _ = state.redis.set_counter("siem:stats:total_alerts", total_alerts as u64, Some(86400)).await;
-            let _ = state.redis.set_counter("siem:stats:active_alerts", active_alerts as u64, Some(86400)).await;
-            let _ = state.redis.set_counter("siem:stats:critical_alerts", critical_alerts as u64, Some(86400)).await;
+            let _ = state.redis.set_counter(&format!("{}:total_logs", tenant_prefix), total_logs as u64, Some(86400)).await;
+            let _ = state.redis.set_counter(&format!("{}:total_alerts", tenant_prefix), total_alerts as u64, Some(86400)).await;
+            let _ = state.redis.set_counter(&format!("{}:active_alerts", tenant_prefix), active_alerts as u64, Some(86400)).await;
+            let _ = state.redis.set_counter(&format!("{}:critical_alerts", tenant_prefix), critical_alerts as u64, Some(86400)).await;
 
             HttpResponse::Ok().json(serde_json::json!({
+                "tenant_id": claims.tenant_id,
                 "total_logs": total_logs,
                 "total_alerts": total_alerts,
                 "active_alerts": active_alerts,

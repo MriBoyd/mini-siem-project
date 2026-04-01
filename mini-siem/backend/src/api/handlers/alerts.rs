@@ -20,7 +20,7 @@ pub async fn list_alerts(req: HttpRequest, state: web::Data<AppState>) -> impl R
         return HttpResponse::Forbidden().json(serde_json::json!({"error":"insufficient role"}));
     }
 
-    match state.db.get_recent_alerts(50).await {
+    match state.db.get_recent_alerts(&claims.tenant_id, 50).await {
         Ok(alerts) => HttpResponse::Ok().json(alerts),
         Err(e) => {
             HttpResponse::InternalServerError().json(serde_json::json!({
@@ -64,6 +64,9 @@ pub async fn ws_alerts(
                 result = alert_rx.recv() => {
                     match result {
                         Ok(alert) => {
+                            if alert.tenant_id != claims.tenant_id {
+                                continue;
+                            }
                             // send typed alert message
                             let payload = serde_json::json!({"type":"alert","data":alert});
                             let msg = match serde_json::to_string(&payload) {
@@ -89,6 +92,9 @@ pub async fn ws_alerts(
                 result_stats = stats_rx.recv() => {
                     match result_stats {
                         Ok(stats) => {
+                            if stats.tenant_id != claims.tenant_id {
+                                continue;
+                            }
                             let payload = serde_json::json!({"type":"stats","data":stats});
                             let msg = match serde_json::to_string(&payload) {
                                 Ok(m) => m,

@@ -165,6 +165,7 @@ impl DetectionEngine {
                     let ca = stats.critical_alerts.load(Ordering::Relaxed) as i64;
 
                     let snapshot = crate::types::DashboardStats {
+                        tenant_id: String::new(),
                         total_logs: tl,
                         total_alerts: ta,
                         active_alerts: aa,
@@ -180,13 +181,14 @@ impl DetectionEngine {
     }
 
     pub async fn reload_rules(&self) -> anyhow::Result<()> {
-        let db_rules = self.db.get_enabled_rules().await?;
+        let db_rules = self.db.get_enabled_rules("").await?;
         let mut new_rules: HashMap<LogTag, Vec<Arc<CompiledRule>>> = HashMap::default();
 
         for dr in db_rules {
             match dr.rule_type.as_str() {
                 "brute_force" => {
                     let concrete = BruteForceRule::new(
+                        dr.tenant_id.clone(),
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(5) as u32,
@@ -200,6 +202,7 @@ impl DetectionEngine {
                 }
                 "port_scan" => {
                     let concrete = PortScanRule::new(
+                        dr.tenant_id.clone(),
                         dr.id.to_string(),
                         dr.name,
                         dr.threshold.unwrap_or(20) as u32,
@@ -213,6 +216,7 @@ impl DetectionEngine {
                 }
                 "malware" => {
                     let concrete = MalwareDetectionRule::new(
+                        dr.tenant_id.clone(),
                         dr.id.to_string(),
                         dr.name,
                         Arc::new(self.redis.clone()),
@@ -227,6 +231,7 @@ impl DetectionEngine {
                         match serde_json::from_value::<RuleCondition>(condition_val) {
                             Ok(condition) => {
                                 let concrete = GenericRule::new(
+                                    dr.tenant_id.clone(),
                                     dr.id.to_string(),
                                     dr.name,
                                     dr.severity,
@@ -248,6 +253,7 @@ impl DetectionEngine {
                         match serde_json::from_value::<CorrelationDefinition>(condition_val) {
                             Ok(def) => {
                                 let concrete = CorrelationRule::new(
+                                    dr.tenant_id.clone(),
                                     dr.id.to_string(),
                                     dr.name,
                                     dr.severity,
@@ -316,6 +322,8 @@ impl DetectionEngine {
                     candidate_rules.extend(v.iter().cloned());
                 }
             }
+
+            candidate_rules.retain(|rule| rule.tenant_id() == log.tenant_id);
 
             let mut eval_futures = Vec::with_capacity(candidate_rules.len());
             for rule in candidate_rules.iter() {

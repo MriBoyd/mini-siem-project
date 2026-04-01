@@ -151,6 +151,7 @@ mod tests {
         // try indexing a synthetic doc (best-effort)
         let log = Log {
             id: uuid::Uuid::new_v4(),
+            tenant_id: "tenant-test".into(),
             timestamp: Utc::now(),
             event_type: "test".into(),
             source_ip: "127.0.0.1".into(),

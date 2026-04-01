@@ -6,6 +6,7 @@ use crate::types::{Log, Alert};
 pub trait Rule: Send + Sync {
     fn name(&self) -> &str;
     fn id(&self) -> &str;
+    fn tenant_id(&self) -> &str;
     /// Return the log types / tags this rule applies to as `LogTag` values.
     fn log_types(&self) -> Vec<crate::types::LogTag>;
     /// Evaluate a log entry. Returns `Ok(Some(alert))` if rule triggers,

@@ -173,14 +173,15 @@ impl Cache for RedisCache {
     }
 
     // Refresh token management
-    async fn store_refresh_token(&self, user_id: &str, token: &str, ttl_seconds: u64) -> Result<()> {
+    async fn store_refresh_token(&self, user_id: &str, tenant_id: &str, token: &str, ttl_seconds: u64) -> Result<()> {
         let mut conn = self.conn.clone();
-        // Key: refresh_token:{token}, Value: {user_id}
+        // Key: refresh_token:{token}, Value: {tenant_id}:{user_id}
         // Also keep a way to revoke all tokens for a user: user_tokens:{user_id} -> set of tokens
         let token_key = format!("refresh_token:{}", token);
         let user_tokens_key = format!("user_tokens:{}", user_id);
+        let token_value = format!("{}:{}", tenant_id, user_id);
         
-        let _: () = conn.set_ex(&token_key, user_id, ttl_seconds).await?;
+        let _: () = conn.set_ex(&token_key, token_value, ttl_seconds).await?;
         let _: () = conn.sadd(&user_tokens_key, token).await?;
         let _: () = conn.expire(&user_tokens_key, ttl_seconds as i64).await?;
         
@@ -198,6 +199,7 @@ impl Cache for RedisCache {
         let mut conn = self.conn.clone();
         if let Some(user_id) = self.get_user_id_by_refresh_token(token).await? {
             let token_key = format!("refresh_token:{}", token);
+            let user_id = user_id.split(':').next_back().unwrap_or(&user_id).to_string();
             let user_tokens_key = format!("user_tokens:{}", user_id);
             let _: () = conn.del(token_key).await?;
             let _: () = conn.srem(user_tokens_key, token).await?;

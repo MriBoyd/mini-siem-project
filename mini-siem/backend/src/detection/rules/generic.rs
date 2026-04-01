@@ -6,6 +6,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 pub struct GenericRule {
+    pub tenant_id: String,
     pub id: String,
     pub name: String,
     pub severity: AlertSeverity,
@@ -13,7 +14,7 @@ pub struct GenericRule {
 }
 
 impl GenericRule {
-    pub fn new(id: String, name: String, severity: String, condition: RuleCondition) -> Self {
+    pub fn new(tenant_id: String, id: String, name: String, severity: String, condition: RuleCondition) -> Self {
         let sev = match severity.to_uppercase().as_str() {
             "CRITICAL" => AlertSeverity::Critical,
             "HIGH" => AlertSeverity::High,
@@ -22,6 +23,7 @@ impl GenericRule {
             _ => AlertSeverity::Info,
         };
         Self {
+            tenant_id,
             id,
             name,
             severity: sev,
@@ -40,6 +42,10 @@ impl Rule for GenericRule {
         &self.id
     }
 
+    fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+
     fn log_types(&self) -> Vec<LogTag> {
         // Generic rules can apply to any log for now.
         // In a more advanced version, we could infer this from the condition.
@@ -50,6 +56,7 @@ impl Rule for GenericRule {
         if self.condition.evaluate(log) {
             Ok(Some(Alert {
                 id: Uuid::new_v4(),
+                tenant_id: log.tenant_id.clone(),
                 rule_id: self.id.clone(),
                 rule_name: self.name.clone(),
                 severity: self.severity,

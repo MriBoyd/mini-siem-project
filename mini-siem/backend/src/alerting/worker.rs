@@ -49,7 +49,7 @@ pub async fn spawn_alert_worker(
                     // fallback to immediate DB write to avoid data loss.
                     if let Err(e) = db_tx.try_send(alert.clone()) {
                         error!("DB batcher channel full, falling back to immediate DB write: {}", e);
-                        match db.get_open_alerts_by_ip(&alert.source_ip).await {
+                        match db.get_open_alerts_by_ip(&alert.tenant_id, &alert.source_ip).await {
                             Ok(mut existing_alerts) => {
                                 if let Some(existing) = existing_alerts.first_mut() {
                                     existing.last_seen = alert.last_seen;
@@ -83,27 +83,31 @@ pub async fn spawn_alert_worker(
                         re.handle_alert(&alert_clone).await;
                     });
 
-                    // Atomically increment alert counters and fetch new values in one call
+                    // Update per-tenant alert counters for dashboard isolation.
                     let is_crit = alert.severity == crate::types::AlertSeverity::Critical;
-                    if let Ok((ta, aa, ca)) = redis.inc_alert_counters(is_crit, 86400).await {
-                        // Try to read total_logs from L1 or DB; best-effort
-                        let tl: Option<u32> = redis.get_counter("siem:stats:total_logs").await.ok().flatten();
-                        if let Some(tl) = tl {
-                            let stats = crate::types::DashboardStats {
-                                total_logs: tl as i64,
-                                total_alerts: ta as i64,
-                                active_alerts: aa as i64,
-                                critical_alerts: ca as i64,
-                            };
-                            let _ = stats_tx.send(stats);
-                        } else if let Ok((otl, ota, oaa, oca)) = db.get_stats().await {
-                            let stats = crate::types::DashboardStats::from((otl, ota, oaa, oca));
-                            let _ = stats_tx.send(stats.clone());
-                            let _ = redis.set_counter("siem:stats:total_logs", otl as u64, Some(86400)).await;
-                            let _ = redis.set_counter("siem:stats:total_alerts", ota as u64, Some(86400)).await;
-                            let _ = redis.set_counter("siem:stats:active_alerts", oaa as u64, Some(86400)).await;
-                            let _ = redis.set_counter("siem:stats:critical_alerts", oca as u64, Some(86400)).await;
-                        }
+                    let tenant_prefix = format!("siem:tenant:{}:stats", alert.tenant_id);
+                    let total_alerts_key = format!("{}:total_alerts", tenant_prefix);
+                    let active_alerts_key = format!("{}:active_alerts", tenant_prefix);
+                    let critical_alerts_key = format!("{}:critical_alerts", tenant_prefix);
+                    let total_logs_key = format!("{}:total_logs", tenant_prefix);
+
+                    let ta = redis.increment_counter(&total_alerts_key, 86400).await.ok();
+                    let aa = redis.increment_counter(&active_alerts_key, 86400).await.ok();
+                    if is_crit {
+                        let _ = redis.increment_counter(&critical_alerts_key, 86400).await;
+                    }
+
+                    if let (Some(ta), Some(aa), Some(tl)) = (ta, aa, redis.get_counter(&total_logs_key).await.ok().flatten()) {
+                        let ca = redis.get_counter(&critical_alerts_key).await.ok().flatten().unwrap_or(0);
+                        let stats = crate::types::DashboardStats {
+                            tenant_id: alert.tenant_id.clone(),
+                            total_logs: tl as i64,
+                            total_alerts: ta as i64,
+                            active_alerts: aa as i64,
+                            critical_alerts: ca as i64,
+                        };
+                        let _ = stats_tx.send(stats);
+                    }
                     }
                 }
                 _ = shutdown_rx.recv() => {

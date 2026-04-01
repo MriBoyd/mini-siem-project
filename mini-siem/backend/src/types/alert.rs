@@ -9,6 +9,7 @@ use super::Log;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Alert {
     pub id: Uuid,
+    pub tenant_id: String,
     pub rule_id: String,
     pub rule_name: String,
     pub severity: AlertSeverity,
@@ -94,6 +95,7 @@ pub enum AlertStatus {
 
 impl Alert {
     pub fn new(
+        tenant_id: impl Into<String>,
         rule_id: impl Into<String>,
         rule_name: impl Into<String>,
         severity: AlertSeverity,
@@ -104,6 +106,7 @@ impl Alert {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
+            tenant_id: tenant_id.into(),
             rule_id: rule_id.into(),
             rule_name: rule_name.into(),
             severity,

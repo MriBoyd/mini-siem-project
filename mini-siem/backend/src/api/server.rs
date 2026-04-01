@@ -58,10 +58,14 @@ pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {
                     .service(auth::refresh)
                     .service(auth::logout)
             )
-            // Public logs ingest endpoints (register before the protected scope)
-            .service(logs::ingest_log)
-            .service(logs::ingest_batch)
-            .service(logs::recent_logs)
+            // Logs are tenant-scoped and require authentication.
+            .service(
+                web::scope("")
+                    .wrap(JwtAuth)
+                    .service(logs::ingest_log)
+                    .service(logs::ingest_batch)
+                    .service(logs::recent_logs)
+            )
 
             // Protected routes
             .service(
