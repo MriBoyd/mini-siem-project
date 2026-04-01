@@ -1656,6 +1656,7 @@ dependencies = [
  "actix-rt",
  "actix-web",
  "actix-ws",
+ "aho-corasick",
  "anyhow",
  "arc-swap",
  "argon2",
