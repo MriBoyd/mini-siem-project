@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create channels
     let (log_tx, mut log_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
+    let (ingest_tx, mut ingest_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
     let (alert_tx, mut _alert_rx_old) = broadcast::channel::<types::Alert>(1000);
     // Broadcast channel for aggregated dashboard stats
     let (stats_tx, mut _stats_rx_old) = broadcast::channel::<types::DashboardStats>(100);
@@ -243,6 +244,26 @@ async fn main() -> anyhow::Result<()> {
     };
     let kafka_lag_metrics_handle = kafka.spawn_partition_lag_metrics_task(kafka_lag_sample_interval_secs, kafka_lag_watermark_timeout_ms);
 
+    let kafka_ingest_handle = {
+        let kafka = kafka.clone();
+        let mut ingest_shutdown_rx = shutdown_tx.subscribe();
+        task::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(log) = ingest_rx.recv() => {
+                        if let Err(e) = kafka.send_log(&log).await {
+                            error!("Failed to enqueue log to Kafka: {}", e);
+                        }
+                    }
+                    _ = ingest_shutdown_rx.recv() => {
+                        info!("🛑 Kafka ingest producer received shutdown");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+
     // Spawn Elasticsearch indexer worker: batch documents for bulk indexing
     let mut elastic_rx_for_indexer = elastic_rx.clone();
     let idx = elastic_index.clone();
@@ -359,6 +380,7 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         redis: redis.clone(),
         kafka: kafka.clone(),
+        ingest_tx: ingest_tx.clone(),
         log_tx: log_tx.clone(),
         alert_tx: alert_tx.clone(),
         stats_tx: stats_tx.clone(),
@@ -471,6 +493,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = handle.await;
     }
     let _ = alert_handle.await;
+    let _ = kafka_ingest_handle.await;
     let _ = kafka_handle.await;
     let _ = kafka_lag_metrics_handle.await;
     let _ = alert_worker_handle.await;

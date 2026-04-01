@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{Utc, DateTime};
 use tracing::info;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::api::server::AppState;
 use crate::db::cache::Cache;
@@ -61,12 +62,19 @@ pub async fn ingest_log(
     // truth for alerts/config; logs are indexed in Elasticsearch via the
     // separate indexer pipeline (Kafka -> indexer -> Elasticsearch).
 
-    // Canonical ingest path: publish to Kafka only.
-    // Downstream detection and indexing consume from Kafka, so this avoids
-    // duplicate processing and inflated counters.
-    if let Err(e) = state.kafka.send_log(&log).await {
-        tracing::error!("Failed to enqueue log to Kafka: {}", e);
-        return HttpResponse::ServiceUnavailable().body("ingest unavailable");
+    // Canonical ingest path: enqueue to the shared producer task.
+    // The task owns Kafka send I/O so request handlers avoid per-request spawn/
+    // send overhead and fail fast when the bounded queue is saturated.
+    match state.ingest_tx.try_send(std::sync::Arc::new(log)) {
+        Ok(_) => {}
+        Err(TrySendError::Full(_)) => {
+            tracing::warn!("ingest queue full, dropping log {}", log_id);
+            return HttpResponse::ServiceUnavailable().body("ingest backlog");
+        }
+        Err(TrySendError::Closed(_)) => {
+            tracing::error!("ingest queue closed");
+            return HttpResponse::ServiceUnavailable().body("ingest unavailable");
+        }
     }
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
@@ -181,11 +189,17 @@ pub async fn ingest_batch(
             received_at: now,
         };
 
-        // Canonical ingest path: publish each log to Kafka only.
-        // Detection and indexing are downstream consumers of Kafka.
-        if let Err(e) = state.kafka.send_log(&log).await {
-            tracing::error!("Failed to enqueue batch log to Kafka: {}", e);
-            return HttpResponse::ServiceUnavailable().body("ingest unavailable");
+        // Canonical ingest path: enqueue each log to the shared producer task.
+        match state.ingest_tx.try_send(std::sync::Arc::new(log)) {
+            Ok(_) => {}
+            Err(TrySendError::Full(_)) => {
+                tracing::warn!("ingest queue full during batch ingest, dropping log {}", log_id);
+                return HttpResponse::ServiceUnavailable().body("ingest backlog");
+            }
+            Err(TrySendError::Closed(_)) => {
+                tracing::error!("ingest queue closed during batch ingest");
+                return HttpResponse::ServiceUnavailable().body("ingest unavailable");
+            }
         }
 
         responses.push(IngestLogResponse {
