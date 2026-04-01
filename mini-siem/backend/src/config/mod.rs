@@ -10,6 +10,8 @@ pub struct Config {
     pub api_bind: String,
     pub metrics_bind: String,
     pub cors_allowed_origins: Vec<String>,
+    pub detection_workers: usize,
+    pub detection_mailbox_size: usize,
     pub kafka_pause_on_full: bool,
     pub kafka_pause_timeout_ms: u64,
     pub rate_limit_per_ip: usize,
@@ -43,6 +45,12 @@ impl Config {
             Err(_) if cfg!(debug_assertions) => parse_csv_list("http://localhost:3000,http://127.0.0.1:3000"),
             Err(_) => return Err(anyhow!("CORS_ALLOWED_ORIGINS must be set in production")),
         };
+        let detection_workers = env::var("DETECTION_WORKERS").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+        let detection_mailbox_size = env::var("DETECTION_MAILBOX_SIZE").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2048);
         let kafka_pause_on_full = env::var("KAFKA_PAUSE_ON_FULL").ok()
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(true);
@@ -69,6 +77,8 @@ impl Config {
             api_bind,
             metrics_bind,
             cors_allowed_origins,
+            detection_workers,
+            detection_mailbox_size,
             kafka_pause_on_full,
             kafka_pause_timeout_ms,
             rate_limit_per_ip,

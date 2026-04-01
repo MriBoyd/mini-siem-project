@@ -3,6 +3,7 @@ use tokio::{signal, task, sync::{broadcast, mpsc, watch}};
 use tracing::{info, error};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::hash::{Hash, Hasher};
 use mini_siem::db::PostgresDb;
 use mini_siem::db::redis::RedisCache;
 use mini_siem::db::cache::Cache;
@@ -10,6 +11,7 @@ use mini_siem::queue::kafka::KafkaQueue;
 use mini_siem::response::engine::ResponseEngine;
 use mini_siem::response::actions::WebhookAction;
 use mini_siem::{api, types, detection, alerting, config, auth};
+use rustc_hash::FxHasher;
 
 
 #[tokio::main]
@@ -28,6 +30,8 @@ async fn main() -> anyhow::Result<()> {
     let redis_url = cfg.redis_url.clone();
     let kafka_brokers = cfg.kafka_brokers.clone();
     let slack_webhook = cfg.slack_webhook.clone();
+    let detection_workers = cfg.detection_workers.max(1);
+    let detection_mailbox_size = cfg.detection_mailbox_size.max(1);
 
     info!("✅ Configuration loaded. Connecting to database and message brokers...");
 
@@ -77,22 +81,66 @@ async fn main() -> anyhow::Result<()> {
         response_engine.clone(),
         kafka.clone(),
     ).await);
+    info!("🧠 Detection worker pool: {} workers, mailbox size {}", detection_workers, detection_mailbox_size);
+
+    let mut detection_worker_senders = Vec::with_capacity(detection_workers);
+    let mut detection_worker_handles = Vec::with_capacity(detection_workers);
+    for worker_id in 0..detection_workers {
+        let (worker_tx, mut worker_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(detection_mailbox_size);
+        detection_worker_senders.push(worker_tx);
+
+        let engine = detection_engine.clone();
+        let mut worker_shutdown_rx = shutdown_tx.subscribe();
+        let worker_handle = task::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(log) = worker_rx.recv() => {
+                        engine.process_log(log).await;
+                    }
+                    _ = worker_shutdown_rx.recv() => {
+                        info!("🛑 Detection worker {} received shutdown", worker_id);
+                        break;
+                    }
+                }
+            }
+        });
+        detection_worker_handles.push(worker_handle);
+    }
+
     let mut detect_shutdown_rx = shutdown_tx.subscribe();
-    let detection_engine_clone = detection_engine.clone();
-    let detection_handle = task::spawn(async move {
+    let detection_dispatch_handle = {
+        let detection_worker_senders = detection_worker_senders;
+        task::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(log) = log_rx.recv() => {
+                        let worker_idx = detection_partition_index(&log, detection_worker_senders.len());
+                        if let Err(e) = detection_worker_senders[worker_idx].send(log).await {
+                            error!("Detection worker {} mailbox closed: {}", worker_idx, e);
+                        }
+                    }
+                    _ = detect_shutdown_rx.recv() => {
+                        info!("🛑 Detection dispatcher received shutdown");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+
+    let detection_engine_for_reload = detection_engine.clone();
+    let mut reload_shutdown_rx = shutdown_tx.subscribe();
+    let detection_reload_handle = task::spawn(async move {
         let mut reload_interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             tokio::select! {
-                Some(log) = log_rx.recv() => {
-                    detection_engine_clone.process_log(log).await;
-                }
                 _ = reload_interval.tick() => {
-                    if let Err(e) = detection_engine_clone.reload_rules().await {
+                    if let Err(e) = detection_engine_for_reload.reload_rules().await {
                         error!("Failed to reload rules: {}", e);
                     }
                 }
-                _ = detect_shutdown_rx.recv() => {
-                    info!("🛑 Detection engine received shutdown");
+                _ = reload_shutdown_rx.recv() => {
+                    info!("🛑 Detection rule reloader received shutdown");
                     break;
                 }
             }
@@ -399,7 +447,11 @@ async fn main() -> anyhow::Result<()> {
     let _ = shutdown_tx.send(());
 
     // Await tasks (give them a moment to finish)
-    let _ = detection_handle.await;
+    let _ = detection_dispatch_handle.await;
+    let _ = detection_reload_handle.await;
+    for handle in detection_worker_handles {
+        let _ = handle.await;
+    }
     let _ = alert_handle.await;
     let _ = kafka_handle.await;
     let _ = alert_worker_handle.await;
@@ -445,4 +497,15 @@ async fn shutdown_signal() {
         _ = ctrl_c_fut => {},
         _ = sigterm_fut => {},
     }
+}
+
+fn detection_partition_index(log: &types::Log, worker_count: usize) -> usize {
+    if worker_count == 0 {
+        return 0;
+    }
+
+    let mut hasher = FxHasher::default();
+    log.tenant_id.hash(&mut hasher);
+    log.source_ip.hash(&mut hasher);
+    (hasher.finish() as usize) % worker_count
 }
