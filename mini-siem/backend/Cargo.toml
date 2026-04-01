@@ -58,6 +58,8 @@ jsonwebtoken = "8"
 argon2 = "0.5"
 rand = "0.8"
 base64 = "0.21"
+hmac = "0.12"
+sha2 = "0.10"
 futures-util = "0.3"
 
 tokio-stream = "0.1"

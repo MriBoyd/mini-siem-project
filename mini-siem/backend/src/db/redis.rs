@@ -8,6 +8,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tokio::time::{sleep, Duration};
 use tokio::sync::Mutex as AsyncMutex;
+use crate::auth::hash_refresh_token;
 
 #[derive(Clone)]
 pub struct RedisCache {
@@ -175,14 +176,15 @@ impl Cache for RedisCache {
     // Refresh token management
     async fn store_refresh_token(&self, user_id: &str, tenant_id: &str, token: &str, ttl_seconds: u64) -> Result<()> {
         let mut conn = self.conn.clone();
-        // Key: refresh_token:{token}, Value: {tenant_id}:{user_id}
-        // Also keep a way to revoke all tokens for a user: user_tokens:{user_id} -> set of tokens
-        let token_key = format!("refresh_token:{}", token);
+        let token_hash = hash_refresh_token(token)?;
+        // Key: refresh_token:{hash}, Value: {tenant_id}:{user_id}
+        // Also keep a way to revoke all tokens for a user: user_tokens:{user_id} -> set of hashes
+        let token_key = format!("refresh_token:{}", token_hash);
         let user_tokens_key = format!("user_tokens:{}", user_id);
         let token_value = format!("{}:{}", tenant_id, user_id);
         
         let _: () = conn.set_ex(&token_key, token_value, ttl_seconds).await?;
-        let _: () = conn.sadd(&user_tokens_key, token).await?;
+        let _: () = conn.sadd(&user_tokens_key, token_hash).await?;
         let _: () = conn.expire(&user_tokens_key, ttl_seconds as i64).await?;
         
         Ok(())
@@ -190,19 +192,21 @@ impl Cache for RedisCache {
 
     async fn get_user_id_by_refresh_token(&self, token: &str) -> Result<Option<String>> {
         let mut conn = self.conn.clone();
-        let token_key = format!("refresh_token:{}", token);
+        let token_hash = hash_refresh_token(token)?;
+        let token_key = format!("refresh_token:{}", token_hash);
         let user_id: Option<String> = conn.get(token_key).await?;
         Ok(user_id)
     }
 
     async fn revoke_refresh_token(&self, token: &str) -> Result<()> {
         let mut conn = self.conn.clone();
+        let token_hash = hash_refresh_token(token)?;
         if let Some(user_id) = self.get_user_id_by_refresh_token(token).await? {
-            let token_key = format!("refresh_token:{}", token);
+            let token_key = format!("refresh_token:{}", token_hash);
             let user_id = user_id.split(':').next_back().unwrap_or(&user_id).to_string();
             let user_tokens_key = format!("user_tokens:{}", user_id);
             let _: () = conn.del(token_key).await?;
-            let _: () = conn.srem(user_tokens_key, token).await?;
+            let _: () = conn.srem(user_tokens_key, token_hash).await?;
         }
         Ok(())
     }
@@ -210,10 +214,10 @@ impl Cache for RedisCache {
     async fn revoke_all_user_tokens(&self, user_id: &str) -> Result<()> {
         let mut conn = self.conn.clone();
         let user_tokens_key = format!("user_tokens:{}", user_id);
-        let tokens: Vec<String> = conn.smembers(&user_tokens_key).await?;
+        let token_hashes: Vec<String> = conn.smembers(&user_tokens_key).await?;
         
-        for token in tokens {
-            let token_key = format!("refresh_token:{}", token);
+        for token_hash in token_hashes {
+            let token_key = format!("refresh_token:{}", token_hash);
             let _: () = conn.del(token_key).await?;
         }
         let _: () = conn.del(user_tokens_key).await?;
