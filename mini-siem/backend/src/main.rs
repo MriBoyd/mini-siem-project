@@ -12,6 +12,65 @@ use mini_siem::response::engine::ResponseEngine;
 use mini_siem::response::actions::WebhookAction;
 use mini_siem::{api, types, detection, alerting, config, auth};
 use rustc_hash::FxHasher;
+use std::time::{Duration, Instant};
+
+struct ManagedTask {
+    name: &'static str,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct TaskRegistry {
+    tasks: Vec<ManagedTask>,
+}
+
+impl TaskRegistry {
+    fn push(&mut self, name: &'static str, handle: tokio::task::JoinHandle<()>) {
+        self.tasks.push(ManagedTask { name, handle });
+    }
+
+    async fn drain(mut self, grace_period: Duration) {
+        let deadline = Instant::now() + grace_period;
+
+        for mut task in self.tasks.drain(..) {
+            let now = Instant::now();
+            if now >= deadline {
+                task.handle.abort();
+                let _ = task.handle.await;
+                tracing::warn!(task = task.name, "Aborted background task after shutdown deadline");
+                continue;
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            match tokio::time::timeout(remaining, &mut task.handle).await {
+                Ok(Ok(())) => {
+                    tracing::info!(task = task.name, "Background task shut down cleanly");
+                }
+                Ok(Err(join_error)) => {
+                    tracing::warn!(task = task.name, error = %join_error, "Background task ended with join error");
+                }
+                Err(_) => {
+                    task.handle.abort();
+                    let _ = task.handle.await;
+                    tracing::warn!(task = task.name, "Aborted background task after drain timeout");
+                }
+            }
+        }
+    }
+}
+
+async fn final_stats_checkpoint(db: &Arc<PostgresDb>, redis: &RedisCache) {
+    let total_logs = redis.get_counter("siem:stats:total_logs").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+    let total_alerts = redis.get_counter("siem:stats:total_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+    let active_alerts = redis.get_counter("siem:stats:active_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+    let critical_alerts = redis.get_counter("siem:stats:critical_alerts").await.ok().flatten().map(|v| v as i64).unwrap_or(0);
+
+    if let Err(e) = db.save_stats("", total_logs, total_alerts, active_alerts, critical_alerts).await {
+        error!("Failed to persist final stats checkpoint: {}", e);
+    } else {
+        info!("✅ Final stats checkpoint persisted");
+    }
+}
 
 
 #[tokio::main]
@@ -43,13 +102,17 @@ async fn main() -> anyhow::Result<()> {
     let db = Arc::new(PostgresDb::new(&database_url).await?);
 
     // Warm and periodically refresh the JWKS cache when external verification keys are used.
-    let _jwks_refresh_handle = auth::jwt::spawn_jwks_refresh_task();
+    let mut task_registry = TaskRegistry::default();
+
+    if let Some(handle) = auth::jwt::spawn_jwks_refresh_task() {
+        task_registry.push("jwks_refresh", handle);
+    }
     
     // Initialize Redis
     let redis = RedisCache::new(&redis_url).await?;
     // Start L1 cache maintenance: evict entries older than 5 minutes every 60s,
     // refresh hot keys older than 30s, keep top 100 hot keys refreshed
-    let _l1_maint = redis.start_l1_maintenance(60, 300, 30, 100);
+    task_registry.push("l1_maintenance", redis.start_l1_maintenance(60, 300, 30, 100));
     
     // Initialize Kafka
     let kafka: KafkaQueue = KafkaQueue::new(&kafka_brokers).await?;
@@ -70,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create channels
     let (log_tx, mut log_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
-    let (ingest_tx, mut ingest_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
+    let (ingest_tx, ingest_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
     let (alert_tx, mut _alert_rx_old) = broadcast::channel::<types::Alert>(1000);
     // Broadcast channel for aggregated dashboard stats
     let (stats_tx, mut _stats_rx_old) = broadcast::channel::<types::DashboardStats>(100);
@@ -90,7 +153,6 @@ async fn main() -> anyhow::Result<()> {
     info!("📈 Kafka lag sampling: every {}s, watermark timeout {}ms", kafka_lag_sample_interval_secs, kafka_lag_watermark_timeout_ms);
 
     let mut detection_worker_senders = Vec::with_capacity(detection_workers);
-    let mut detection_worker_handles = Vec::with_capacity(detection_workers);
     for worker_id in 0..detection_workers {
         let (worker_tx, mut worker_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(detection_mailbox_size);
         detection_worker_senders.push(worker_tx);
@@ -115,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
-        detection_worker_handles.push(worker_handle);
+        task_registry.push("detection_worker", worker_handle);
     }
 
     let mut detect_shutdown_rx = shutdown_tx.subscribe();
@@ -145,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
             }
         })
     };
+    task_registry.push("detection_dispatch", detection_dispatch_handle);
 
     let detection_engine_for_reload = detection_engine.clone();
     let mut reload_shutdown_rx = shutdown_tx.subscribe();
@@ -164,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    task_registry.push("detection_reload", detection_reload_handle);
     
     // Start alert handler with Slack
     let mut alert_shutdown_rx = shutdown_tx.subscribe();
@@ -186,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    task_registry.push("alert_handler", alert_handle);
     
     // Start Kafka consumer (receives logs from Go agent)
     let kafka_consumer = kafka.clone();
@@ -242,11 +307,14 @@ async fn main() -> anyhow::Result<()> {
             }
         })
     };
+    task_registry.push("kafka_consumer", kafka_handle);
     let kafka_lag_metrics_handle = kafka.spawn_partition_lag_metrics_task(kafka_lag_sample_interval_secs, kafka_lag_watermark_timeout_ms);
+    task_registry.push("kafka_lag_metrics", kafka_lag_metrics_handle);
 
     let kafka_ingest_handle = {
         let kafka = kafka.clone();
         let mut ingest_shutdown_rx = shutdown_tx.subscribe();
+        let mut ingest_rx = ingest_rx;
         task::spawn(async move {
             loop {
                 tokio::select! {
@@ -257,18 +325,25 @@ async fn main() -> anyhow::Result<()> {
                     }
                     _ = ingest_shutdown_rx.recv() => {
                         info!("🛑 Kafka ingest producer received shutdown");
+                        while let Ok(log) = ingest_rx.try_recv() {
+                            if let Err(e) = kafka.send_log(&log).await {
+                                error!("Failed to drain log to Kafka during shutdown: {}", e);
+                            }
+                        }
                         break;
                     }
                 }
             }
         })
     };
+    task_registry.push("kafka_ingest", kafka_ingest_handle);
 
     // Spawn Elasticsearch indexer worker: batch documents for bulk indexing
     let mut elastic_rx_for_indexer = elastic_rx.clone();
     let idx = elastic_index.clone();
     let kafka_for_indexer = kafka.clone();
-    let _es_handle = task::spawn(async move {
+    let mut es_shutdown_rx = shutdown_tx.subscribe();
+    let es_handle = task::spawn(async move {
         use tokio::time::{timeout, sleep, Duration};
         use mini_siem::queue::kafka::LOGS_DLQ_TOPIC;
 
@@ -372,8 +447,30 @@ async fn main() -> anyhow::Result<()> {
             buffer.clear();
             // reset backoff for next batch
             backoff_ms = 500;
+
+            if es_shutdown_rx.try_recv().is_ok() {
+                info!("🛑 Elasticsearch indexer received shutdown, draining remaining queue");
+                while let Ok(l) = index_rx.try_recv() {
+                    buffer.push(l);
+                    if buffer.len() >= batch_size {
+                        let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
+                        if let Ok(Some(es_client)) = timeout(Duration::from_secs(5), async { elastic_rx_for_indexer.borrow().clone() }).await {
+                            let _ = es_client.bulk_index(&idx, &refs).await;
+                        }
+                        buffer.clear();
+                    }
+                }
+                if !buffer.is_empty() {
+                    let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
+                    if let Ok(Some(es_client)) = timeout(Duration::from_secs(5), async { elastic_rx_for_indexer.borrow().clone() }).await {
+                        let _ = es_client.bulk_index(&idx, &refs).await;
+                    }
+                }
+                break;
+            }
         }
     });
+    task_registry.push("elasticsearch_indexer", es_handle);
     
     // Create shared application state for the API handlers.
     let app_state = web::Data::new(api::server::AppState {
@@ -390,7 +487,7 @@ async fn main() -> anyhow::Result<()> {
     let elastic_reconnect_tx = elastic_tx.clone();
     let elastic_reconnect_rx = elastic_rx.clone();
     let elastic_reconnect_host = elastic_host.clone();
-    let _elastic_reconnect_handle = task::spawn(async move {
+    let elastic_reconnect_handle = task::spawn(async move {
         use tokio::time::{sleep, Duration};
 
         loop {
@@ -413,17 +510,19 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    task_registry.push("elastic_reconnect", elastic_reconnect_handle);
 
     // Start dedicated alert worker to process alerts from Kafka asynchronously
     // Create DB batcher channel and spawn the DB batcher
     let (db_tx, db_rx) = mpsc::channel::<types::Alert>(1000);
-    let _db_batcher_handle = alerting::db_batcher::spawn_db_batcher(
+    let db_batcher_handle = alerting::db_batcher::spawn_db_batcher(
         db.clone(),
         db_rx,
         shutdown_tx.subscribe(),
         100,
         1000,
     );
+    task_registry.push("db_batcher", db_batcher_handle);
 
     let alert_worker_handle = alerting::worker::spawn_alert_worker(
         kafka.clone(),
@@ -437,11 +536,12 @@ async fn main() -> anyhow::Result<()> {
         cfg.kafka_pause_on_full,
         cfg.kafka_pause_timeout_ms,
     ).await;
+    task_registry.push("alert_worker", alert_worker_handle);
 
     // Start periodic Redis -> Postgres stats sync (reads Redis counters and persists them periodically)
     let db_clone_for_stats = db.clone();
     let redis_clone_for_stats = redis.clone();
-    let _stats_sync_handle = task::spawn(async move {
+    let stats_sync_handle = task::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -456,6 +556,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    task_registry.push("stats_sync", stats_sync_handle);
 
     info!("✅ Mini SIEM fully initialized");
     info!("📡 API: http://{}", cfg.api_bind);
@@ -469,7 +570,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Run API server until shutdown signal or error
     tokio::select! {
-        res = api::run_server(app_state, cfg.cors_allowed_origins.clone()) => {
+        res = api::run_server(app_state.clone(), cfg.cors_allowed_origins.clone()) => {
             if let Err(e) = res {
                 // If the address is in use, log a clearer message
                 if e.kind() == std::io::ErrorKind::AddrInUse {
@@ -484,19 +585,19 @@ async fn main() -> anyhow::Result<()> {
     info!("🛑 Shutting down...");
 
     // Notify background tasks to shutdown
+    drop(app_state);
+    drop(log_tx);
+    drop(ingest_tx);
+    drop(index_tx);
+    drop(db_tx);
     let _ = shutdown_tx.send(());
 
-    // Await tasks (give them a moment to finish)
-    let _ = detection_dispatch_handle.await;
-    let _ = detection_reload_handle.await;
-    for handle in detection_worker_handles {
-        let _ = handle.await;
-    }
-    let _ = alert_handle.await;
-    let _ = kafka_ingest_handle.await;
-    let _ = kafka_handle.await;
-    let _ = kafka_lag_metrics_handle.await;
-    let _ = alert_worker_handle.await;
+    // Give background tasks a bounded chance to drain before falling back to abort.
+    task_registry.drain(Duration::from_secs(15)).await;
+
+    // Final checkpoint after drain so the latest counters are persisted even if
+    // the periodic stats sync task was in flight during shutdown.
+    final_stats_checkpoint(&db, &redis).await;
 
     info!("👋 Goodbye!");
     
