@@ -25,7 +25,9 @@ pub trait Cache: Send + Sync {
     async fn expire_key(&self, key: &str, ttl_seconds: u64) -> Result<()>;
 
     async fn zadd(&self, key: &str, member: &str, score: i64) -> Result<()>;
+    async fn zincrby(&self, key: &str, member: &str, increment: f64) -> Result<f64>;
     async fn zcard(&self, key: &str) -> Result<u64>;
+    async fn zrevrange_withscores(&self, key: &str, start: isize, stop: isize) -> Result<Vec<(String, f64)>>;
     async fn zpopmin(&self, key: &str) -> Result<Option<String>>;
     async fn zrem(&self, key: &str, member: &str) -> Result<()>;
 

@@ -8,3 +8,4 @@ pub mod audit;
 pub mod compliance;
 pub mod cases;
 pub mod packs;
+pub mod cost;

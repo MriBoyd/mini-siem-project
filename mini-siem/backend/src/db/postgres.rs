@@ -11,6 +11,7 @@ use crate::db::models::rule::{DetectionRule, RuleCreate};
 use crate::db::models::audit::AuditEvent;
 use crate::db::models::compliance::TenantCompliancePolicy;
 use crate::db::models::case::{CaseRecord, CasePlaybook, CaseTimelineEvent, CaseStatus};
+use crate::db::models::data_cost::{TenantDataCostPolicy, TenantDataCostPolicyUpdate};
 use crate::db::cache::Cache;
 use serde_json::Value;
 use crate::auth::password::hash_password;
@@ -738,6 +739,72 @@ impl PostgresDb {
         .await?;
 
         Ok(rows)
+    }
+
+    pub async fn get_tenant_data_cost_policy(&self, tenant_id: &str) -> Result<TenantDataCostPolicy> {
+        let policy = sqlx::query_as::<_, TenantDataCostPolicy>(
+            r#"
+            SELECT tenant_id, daily_ingest_bytes_budget, hot_storage_bytes_budget, warm_storage_bytes_budget,
+                   cold_storage_bytes_budget, sampling_enabled, low_value_sampling_percent,
+                   high_value_sampling_percent, drop_low_value_when_over_budget, schema_drop_rules,
+                   source_budgets, integration_budgets, team_budgets, updated_at
+            FROM tenant_data_cost_policies
+            WHERE tenant_id = $1
+            "#,
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(policy.unwrap_or_else(|| TenantDataCostPolicy::default_for_tenant(tenant_id)))
+    }
+
+    pub async fn upsert_tenant_data_cost_policy(&self, policy: &TenantDataCostPolicy) -> Result<TenantDataCostPolicy> {
+        let record = sqlx::query_as::<_, TenantDataCostPolicy>(
+            r#"
+            INSERT INTO tenant_data_cost_policies (
+                tenant_id, daily_ingest_bytes_budget, hot_storage_bytes_budget, warm_storage_bytes_budget,
+                cold_storage_bytes_budget, sampling_enabled, low_value_sampling_percent,
+                high_value_sampling_percent, drop_low_value_when_over_budget, schema_drop_rules,
+                source_budgets, integration_budgets, team_budgets, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                daily_ingest_bytes_budget = EXCLUDED.daily_ingest_bytes_budget,
+                hot_storage_bytes_budget = EXCLUDED.hot_storage_bytes_budget,
+                warm_storage_bytes_budget = EXCLUDED.warm_storage_bytes_budget,
+                cold_storage_bytes_budget = EXCLUDED.cold_storage_bytes_budget,
+                sampling_enabled = EXCLUDED.sampling_enabled,
+                low_value_sampling_percent = EXCLUDED.low_value_sampling_percent,
+                high_value_sampling_percent = EXCLUDED.high_value_sampling_percent,
+                drop_low_value_when_over_budget = EXCLUDED.drop_low_value_when_over_budget,
+                schema_drop_rules = EXCLUDED.schema_drop_rules,
+                source_budgets = EXCLUDED.source_budgets,
+                integration_budgets = EXCLUDED.integration_budgets,
+                team_budgets = EXCLUDED.team_budgets,
+                updated_at = NOW()
+            RETURNING tenant_id, daily_ingest_bytes_budget, hot_storage_bytes_budget, warm_storage_bytes_budget,
+                      cold_storage_bytes_budget, sampling_enabled, low_value_sampling_percent,
+                      high_value_sampling_percent, drop_low_value_when_over_budget, schema_drop_rules,
+                      source_budgets, integration_budgets, team_budgets, updated_at
+            "#,
+        )
+        .bind(&policy.tenant_id)
+        .bind(policy.daily_ingest_bytes_budget)
+        .bind(policy.hot_storage_bytes_budget)
+        .bind(policy.warm_storage_bytes_budget)
+        .bind(policy.cold_storage_bytes_budget)
+        .bind(policy.sampling_enabled)
+        .bind(policy.low_value_sampling_percent)
+        .bind(policy.high_value_sampling_percent)
+        .bind(policy.drop_low_value_when_over_budget)
+        .bind(&policy.schema_drop_rules)
+        .bind(&policy.source_budgets)
+        .bind(&policy.integration_budgets)
+        .bind(&policy.team_budgets)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(record)
     }
 
     async fn ensure_default_case_playbooks(&self, tenant_id: &str) -> Result<()> {

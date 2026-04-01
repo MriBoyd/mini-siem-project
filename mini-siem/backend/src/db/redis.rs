@@ -270,10 +270,33 @@ impl Cache for RedisCache {
         Ok(())
     }
 
+    async fn zincrby(&self, key: &str, member: &str, increment: f64) -> Result<f64> {
+        let mut conn = self.conn.clone();
+        let score: f64 = redis::cmd("ZINCRBY")
+            .arg(key)
+            .arg(increment)
+            .arg(member)
+            .query_async(&mut conn)
+            .await?;
+        Ok(score)
+    }
+
     async fn zcard(&self, key: &str) -> Result<u64> {
         let mut conn = self.conn.clone();
         let count: u64 = conn.zcard(key).await?;
         Ok(count)
+    }
+
+    async fn zrevrange_withscores(&self, key: &str, start: isize, stop: isize) -> Result<Vec<(String, f64)>> {
+        let mut conn = self.conn.clone();
+        let values: Vec<(String, f64)> = redis::cmd("ZREVRANGE")
+            .arg(key)
+            .arg(start)
+            .arg(stop)
+            .arg("WITHSCORES")
+            .query_async(&mut conn)
+            .await?;
+        Ok(values)
     }
 
     async fn zpopmin(&self, key: &str) -> Result<Option<String>> {

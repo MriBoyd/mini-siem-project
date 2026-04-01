@@ -7,6 +7,7 @@ use tokio::time::{timeout, Duration};
 
 use crate::api::server::AppState;
 use crate::api::tenant::enforce_tenant_fixed_window;
+use crate::costs::{evaluate_cost_decision, record_cost_usage};
 use crate::monitoring::bounded_tenant_label;
 use crate::db::cache::Cache;
 use crate::auth::jwt::Claims;
@@ -23,6 +24,7 @@ pub struct IngestLogRequest {
     pub message: String,
     pub severity: Option<LogSeverity>,
     pub timestamp: Option<DateTime<Utc>>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,6 +32,10 @@ pub struct IngestLogResponse {
     pub id: String,
     pub status: String,
     pub accepted_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_reason: Option<String>,
 }
 
 #[post("/api/v1/logs/ingest")]
@@ -69,9 +75,47 @@ pub async fn ingest_log(
         service: req.service.clone(),
         message: req.message.clone(),
         severity: req.severity.unwrap_or(LogSeverity::Info),
-        metadata: serde_json::Value::Null,
+        metadata: req.metadata.clone().unwrap_or(serde_json::Value::Null),
         received_at: now,
     };
+
+    let decision = match evaluate_cost_decision(&state, &claims.tenant_id, &req).await {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!("cost controller failed, defaulting to keep: {}", e);
+            (
+                crate::db::models::data_cost::TenantDataCostPolicy::default_for_tenant(&claims.tenant_id),
+                crate::db::models::data_cost::CostDecision {
+                    action: "keep".to_string(),
+                    keep: true,
+                    sampled: false,
+                    dropped: false,
+                    sample_rate_percent: 100,
+                    reason: "cost controller unavailable".to_string(),
+                    estimated_bytes: 0,
+                    source_key: req.source_ip.clone(),
+                    integration_key: req.service.clone().unwrap_or_else(|| req.event_type.clone()),
+                    team_key: "unassigned".to_string(),
+                },
+            ).1
+        }
+    };
+
+    if let Err(e) = record_cost_usage(&state, &claims.tenant_id, &decision).await {
+        tracing::warn!("failed to record cost usage: {}", e);
+    }
+
+    if !decision.keep {
+        info!("📉 Dropped sampled log {} for cost control: {}", log_id, decision.reason);
+        metrics::counter!("siem_cost_logs_dropped_total", 1, "tenant" => tenant_label.clone(), "action" => decision.action.clone());
+        return HttpResponse::Accepted().json(IngestLogResponse {
+            id: log_id.to_string(),
+            status: decision.action.clone(),
+            accepted_at: now,
+            cost_action: Some(decision.action),
+            cost_reason: Some(decision.reason),
+        });
+    }
     
     // Do NOT persist raw logs into Postgres here. Postgres is the source of
     // truth for alerts/config; logs are indexed in Elasticsearch via the
@@ -102,6 +146,8 @@ pub async fn ingest_log(
         id: log_id.to_string(),
         status: "accepted".to_string(),
         accepted_at: now,
+        cost_action: Some(decision.action),
+        cost_reason: Some(decision.reason),
     })
 }
 
@@ -184,6 +230,40 @@ pub async fn ingest_batch(
     
     for log_req in &req.logs {
         let log_id = Uuid::new_v4();
+        let decision = match evaluate_cost_decision(&state, &claims.tenant_id, log_req).await {
+            Ok((_, decision)) => decision,
+            Err(e) => {
+                tracing::warn!("cost controller failed for batch item, defaulting to keep: {}", e);
+                crate::db::models::data_cost::CostDecision {
+                    action: "keep".to_string(),
+                    keep: true,
+                    sampled: false,
+                    dropped: false,
+                    sample_rate_percent: 100,
+                    reason: "cost controller unavailable".to_string(),
+                    estimated_bytes: 0,
+                    source_key: log_req.source_ip.clone(),
+                    integration_key: log_req.service.clone().unwrap_or_else(|| log_req.event_type.clone()),
+                    team_key: "unassigned".to_string(),
+                }
+            }
+        };
+
+        if let Err(e) = record_cost_usage(&state, &claims.tenant_id, &decision).await {
+            tracing::warn!("failed to record cost usage for batch item: {}", e);
+        }
+
+        if !decision.keep {
+            responses.push(IngestLogResponse {
+                id: log_id.to_string(),
+                status: decision.action.clone(),
+                accepted_at: now,
+                cost_action: Some(decision.action),
+                cost_reason: Some(decision.reason),
+            });
+            continue;
+        }
+
         let log = Log {
             id: log_id,
             tenant_id: claims.tenant_id.clone(),
@@ -194,7 +274,7 @@ pub async fn ingest_batch(
             service: log_req.service.clone(),
             message: log_req.message.clone(),
             severity: log_req.severity.unwrap_or(LogSeverity::Info),
-            metadata: serde_json::Value::Null,
+            metadata: log_req.metadata.clone().unwrap_or(serde_json::Value::Null),
             received_at: now,
         };
 
@@ -207,6 +287,8 @@ pub async fn ingest_batch(
             id: log_id.to_string(),
             status: "accepted".to_string(),
             accepted_at: now,
+            cost_action: Some(decision.action),
+            cost_reason: Some(decision.reason),
         });
     }
     

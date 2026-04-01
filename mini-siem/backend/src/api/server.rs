@@ -4,7 +4,7 @@ use tracing::info;
 use std::sync::Arc;
 use tokio::sync::{mpsc, broadcast};
 
-use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules, audit, compliance, cases, packs};
+use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules, audit, compliance, cases, packs, cost};
 use crate::api::middleware::{auth::JwtAuth, telemetry::RequestTelemetry};
 use crate::db::PostgresDb;
 use crate::db::redis::RedisCache;
@@ -106,6 +106,9 @@ pub async fn run_server(state: web::Data<AppState>, cors_allowed_origins: Vec<St
                     .service(packs::list_detection_packs)
                     .service(packs::get_detection_pack)
                     .service(packs::install_detection_pack)
+                    .service(cost::get_cost_policy)
+                    .service(cost::update_cost_policy)
+                    .service(cost::get_cost_dashboard)
                     .service(compliance::get_policy)
                     .service(compliance::update_policy)
                     .service(compliance::record_key_rotation)

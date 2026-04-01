@@ -72,6 +72,63 @@ export interface DetectionPack {
   total_rule_count: number;
 }
 
+export interface TenantDataCostPolicy {
+  tenant_id: string;
+  daily_ingest_bytes_budget: number;
+  hot_storage_bytes_budget: number;
+  warm_storage_bytes_budget: number;
+  cold_storage_bytes_budget: number;
+  sampling_enabled: boolean;
+  low_value_sampling_percent: number;
+  high_value_sampling_percent: number;
+  drop_low_value_when_over_budget: boolean;
+  schema_drop_rules: Record<string, unknown>[];
+  source_budgets: Record<string, number>;
+  integration_budgets: Record<string, number>;
+  team_budgets: Record<string, number>;
+  updated_at: string;
+}
+
+export interface TenantCostDimensionUsage {
+  dimension: string;
+  key: string;
+  bytes: number;
+  logs: number;
+  sampled: number;
+  dropped: number;
+}
+
+export interface TenantCostDashboard {
+  tenant_id: string;
+  policy: TenantDataCostPolicy;
+  usage_bytes_today: number;
+  usage_logs_today: number;
+  sampled_logs_today: number;
+  dropped_logs_today: number;
+  tenant_budget_pressure: number;
+  hot_storage_pressure: number;
+  warm_storage_pressure: number;
+  cold_storage_pressure: number;
+  top_sources: TenantCostDimensionUsage[];
+  top_integrations: TenantCostDimensionUsage[];
+  top_teams: TenantCostDimensionUsage[];
+}
+
+export interface TenantDataCostPolicyUpdate {
+  daily_ingest_bytes_budget?: number;
+  hot_storage_bytes_budget?: number;
+  warm_storage_bytes_budget?: number;
+  cold_storage_bytes_budget?: number;
+  sampling_enabled?: boolean;
+  low_value_sampling_percent?: number;
+  high_value_sampling_percent?: number;
+  drop_low_value_when_over_budget?: boolean;
+  schema_drop_rules?: Record<string, unknown>[];
+  source_budgets?: Record<string, number>;
+  integration_budgets?: Record<string, number>;
+  team_budgets?: Record<string, number>;
+}
+
 export interface DashboardStats {
   tenant_id?: string;
   total_logs: number;
