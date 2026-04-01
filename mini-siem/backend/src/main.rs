@@ -238,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
             }
         })
     };
+    let kafka_lag_metrics_handle = kafka.spawn_partition_lag_metrics_task(5, 500);
 
     // Spawn Elasticsearch indexer worker: batch documents for bulk indexing
     let mut elastic_rx_for_indexer = elastic_rx.clone();
@@ -468,6 +469,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let _ = alert_handle.await;
     let _ = kafka_handle.await;
+    let _ = kafka_lag_metrics_handle.await;
     let _ = alert_worker_handle.await;
 
     info!("👋 Goodbye!");

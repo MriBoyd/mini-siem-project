@@ -5,6 +5,7 @@ use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::{Header, Message, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::util::Timeout;
 use serde_json;
 use tokio::sync::mpsc;
@@ -28,8 +29,8 @@ pub const LOGS_DLQ_TOPIC: &str = "siem-logs-dlq";
 
 pub struct KafkaQueue {
     producer: FutureProducer,
-    consumer: StreamConsumer,
-    alert_consumer: StreamConsumer,
+    consumer: Arc<StreamConsumer>,
+    alert_consumer: Arc<StreamConsumer>,
     topic: String,
 }
 
@@ -77,8 +78,8 @@ impl KafkaQueue {
 
                                     return Ok(KafkaQueue {
                                         producer,
-                                        consumer,
-                                        alert_consumer,
+                                        consumer: Arc::new(consumer),
+                                        alert_consumer: Arc::new(alert_consumer),
                                         topic: DEFAULT_TOPIC.to_string(),
                                     });
                                 }
@@ -210,6 +211,50 @@ impl KafkaQueue {
         }
     }
 
+    pub fn spawn_partition_lag_metrics_task(&self, sample_interval_secs: u64, watermark_timeout_ms: u64) -> tokio::task::JoinHandle<()> {
+        let consumer = self.consumer.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(sample_interval_secs.max(1)));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            loop {
+                interval.tick().await;
+
+                let assignment: TopicPartitionList = match consumer.assignment() {
+                    Ok(assignment) => assignment,
+                    Err(e) => {
+                        tracing::warn!("failed to read Kafka assignment for lag metrics: {}", e);
+                        continue;
+                    }
+                };
+
+                for partition in assignment.elements() {
+                    let topic = partition.topic().to_string();
+                    let partition_id = partition.partition();
+                    let current_offset = match partition.offset() {
+                        Offset::Offset(offset) => Some(offset),
+                        _ => None,
+                    };
+
+                    match consumer.fetch_watermarks(&topic, partition_id, Timeout::After(Duration::from_millis(watermark_timeout_ms.max(1)))) {
+                        Ok((_low, high)) => {
+                            metrics::gauge!("siem_kafka_partition_highwater_offset", high as f64, "topic" => topic.clone(), "partition" => partition_id.to_string());
+                            if let Some(current) = current_offset {
+                                metrics::gauge!("siem_kafka_partition_consumer_offset", current as f64, "topic" => topic.clone(), "partition" => partition_id.to_string());
+                                let lag = if high >= current { (high - current) as f64 } else { 0.0 };
+                                metrics::gauge!("siem_kafka_partition_lag", lag, "topic" => topic.clone(), "partition" => partition_id.to_string());
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to fetch Kafka watermarks for lag metrics: {}", e);
+                        }
+                    }
+                }
+            }
+        })
+    }
+
     /// Consume from Kafka and forward logs into the provided `tx`.
     /// `full_counter` is incremented when the channel is full (monitoring aid).
     pub async fn consume_logs(&self, tx: mpsc::Sender<std::sync::Arc<Log>>, index_tx: Option<mpsc::Sender<std::sync::Arc<Log>>>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
@@ -218,18 +263,6 @@ impl KafkaQueue {
         while let Some(message) = stream.next().await {
             match message {
                 Ok(msg) => {
-                    // Observe consumer offset and partition highwater (if available).
-                    let topic = msg.topic().to_string();
-                    let partition = msg.partition();
-                    let offset = msg.offset();
-                    metrics::gauge!("siem_kafka_partition_consumer_offset", offset as f64, "topic" => topic.clone(), "partition" => partition.to_string());
-                    // try to fetch highwater mark for this partition
-                    if let Ok((_low, high)) = self.consumer.fetch_watermarks(&topic, partition, Timeout::After(Duration::from_millis(500))) {
-                        metrics::gauge!("siem_kafka_partition_highwater_offset", high as f64, "topic" => topic.clone(), "partition" => partition.to_string());
-                        let lag = if high >= offset { (high - offset) as f64 } else { 0.0 };
-                        metrics::gauge!("siem_kafka_partition_lag", lag, "topic" => topic.clone(), "partition" => partition.to_string());
-                    }
-
                     if let Some(payload) = msg.payload() {
                         if let Ok(log) = serde_json::from_slice::<Log>(payload) {
                             // Centralized Redis sliding-window rate limiter per IP
