@@ -231,6 +231,39 @@ impl Cache for RedisCache {
         Ok(())
     }
 
+    async fn expire_key(&self, key: &str, ttl_seconds: u64) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.expire(key, ttl_seconds as i64).await?;
+        Ok(())
+    }
+
+    async fn zadd(&self, key: &str, member: &str, score: i64) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.zadd(key, member, score).await?;
+        Ok(())
+    }
+
+    async fn zcard(&self, key: &str) -> Result<u64> {
+        let mut conn = self.conn.clone();
+        let count: u64 = conn.zcard(key).await?;
+        Ok(count)
+    }
+
+    async fn zpopmin(&self, key: &str) -> Result<Option<String>> {
+        let mut conn = self.conn.clone();
+        let result: Option<(String, f64)> = redis::cmd("ZPOPMIN")
+            .arg(key)
+            .query_async(&mut conn)
+            .await?;
+        Ok(result.map(|(member, _score)| member))
+    }
+
+    async fn zrem(&self, key: &str, member: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.zrem(key, member).await?;
+        Ok(())
+    }
+
     async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()> {
         let mut conn = self.conn.clone();
         let _: () = conn.set(key, value).await?;

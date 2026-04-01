@@ -21,6 +21,12 @@ pub trait Cache: Send + Sync {
     async fn revoke_refresh_token(&self, token: &str) -> Result<()>;
     async fn revoke_all_user_tokens(&self, user_id: &str) -> Result<()>;
     async fn delete_key(&self, key: &str) -> Result<()>;
+    async fn expire_key(&self, key: &str, ttl_seconds: u64) -> Result<()>;
+
+    async fn zadd(&self, key: &str, member: &str, score: i64) -> Result<()>;
+    async fn zcard(&self, key: &str) -> Result<u64>;
+    async fn zpopmin(&self, key: &str) -> Result<Option<String>>;
+    async fn zrem(&self, key: &str, member: &str) -> Result<()>;
 
     async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()>;
     async fn get_string(&self, key: &str) -> Result<Option<String>>;
