@@ -101,6 +101,7 @@ func main() {
 					logQueue.Size(),
 					time.Since(stats.StartTime).Round(time.Second),
 				)
+				log.Printf("Status - Dropped: %d", logQueue.Dropped())
 			}
 		}
 	}()

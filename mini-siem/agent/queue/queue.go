@@ -2,6 +2,7 @@ package queue
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"agent-go/models"
 )
@@ -12,6 +13,7 @@ type Queue struct {
 	mu      sync.RWMutex
 	cond    *sync.Cond
 	maxSize int
+	dropped atomic.Uint64
 }
 
 // New creates a new queue
@@ -45,6 +47,7 @@ func (q *Queue) TryPush(log *models.Log) bool {
 	defer q.mu.Unlock()
 
 	if len(q.items) >= q.maxSize {
+		q.dropped.Add(1)
 		return false
 	}
 
@@ -108,4 +111,9 @@ func (q *Queue) Size() int {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	return len(q.items)
+}
+
+// Dropped returns the number of logs dropped because the queue was full.
+func (q *Queue) Dropped() uint64 {
+	return q.dropped.Load()
 }
