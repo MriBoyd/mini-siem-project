@@ -80,24 +80,21 @@ pub async fn ingest_log(
     };
 
     let decision = match evaluate_cost_decision(&state, &claims.tenant_id, &req).await {
-        Ok(result) => result,
+        Ok((_, decision)) => decision,
         Err(e) => {
             tracing::warn!("cost controller failed, defaulting to keep: {}", e);
-            (
-                crate::db::models::data_cost::TenantDataCostPolicy::default_for_tenant(&claims.tenant_id),
-                crate::db::models::data_cost::CostDecision {
-                    action: "keep".to_string(),
-                    keep: true,
-                    sampled: false,
-                    dropped: false,
-                    sample_rate_percent: 100,
-                    reason: "cost controller unavailable".to_string(),
-                    estimated_bytes: 0,
-                    source_key: req.source_ip.clone(),
-                    integration_key: req.service.clone().unwrap_or_else(|| req.event_type.clone()),
-                    team_key: "unassigned".to_string(),
-                },
-            ).1
+            crate::db::models::data_cost::CostDecision {
+                action: "keep".to_string(),
+                keep: true,
+                sampled: false,
+                dropped: false,
+                sample_rate_percent: 100,
+                reason: "cost controller unavailable".to_string(),
+                estimated_bytes: 0,
+                source_key: req.source_ip.clone(),
+                integration_key: req.service.clone().unwrap_or_else(|| req.event_type.clone()),
+                team_key: "unassigned".to_string(),
+            }
         }
     };
 

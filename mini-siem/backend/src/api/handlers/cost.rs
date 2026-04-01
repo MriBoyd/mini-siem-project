@@ -5,7 +5,7 @@ use crate::api::tenant::enforce_tenant_fixed_window;
 use crate::auth::jwt::Claims;
 use crate::costs::{build_cost_dashboard, load_tenant_cost_policy, save_tenant_cost_policy};
 use crate::db::models::audit::AuditEvent;
-use crate::db::models::data_cost::{TenantDataCostPolicy, TenantDataCostPolicyUpdate};
+use crate::db::models::data_cost::TenantDataCostPolicyUpdate;
 use crate::utils::audit::{audit_payload, hash_audit_payload, sign_audit_hash};
 use chrono::Utc;
 use uuid::Uuid;

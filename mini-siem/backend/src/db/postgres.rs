@@ -11,7 +11,7 @@ use crate::db::models::rule::{DetectionRule, RuleCreate};
 use crate::db::models::audit::AuditEvent;
 use crate::db::models::compliance::TenantCompliancePolicy;
 use crate::db::models::case::{CaseRecord, CasePlaybook, CaseTimelineEvent, CaseStatus};
-use crate::db::models::data_cost::{TenantDataCostPolicy, TenantDataCostPolicyUpdate};
+use crate::db::models::data_cost::TenantDataCostPolicy;
 use crate::db::cache::Cache;
 use serde_json::Value;
 use crate::auth::password::hash_password;
