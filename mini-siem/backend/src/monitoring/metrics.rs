@@ -1,14 +1,17 @@
 use anyhow::Result;
 use lazy_static::lazy_static;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use opentelemetry::global;
+use opentelemetry::{global, KeyValue};
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, Sampler, SdkTracerProvider};
+use opentelemetry_sdk::Resource;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 lazy_static! {
     static ref TENANT_LABELS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
@@ -54,11 +57,54 @@ pub fn bounded_tenant_label(tenant_id: &str) -> String {
 }
 
 pub fn init_tracing(service_name: &str) -> Result<ObservabilityGuard> {
-    use opentelemetry_stdout::SpanExporter;
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+    let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://127.0.0.1:4317".to_string());
+    let sample_ratio = std::env::var("OTEL_TRACES_SAMPLER_ARG")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+
+    let batch_config = BatchConfigBuilder::default()
+        .with_max_queue_size(
+            std::env::var("OTEL_BSP_MAX_QUEUE_SIZE")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(2048),
+        )
+        .with_max_export_batch_size(
+            std::env::var("OTEL_BSP_MAX_EXPORT_BATCH_SIZE")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(512),
+        )
+        .with_scheduled_delay(Duration::from_millis(
+            std::env::var("OTEL_BSP_SCHEDULE_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(5000),
+        ))
+        .build();
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(otlp_endpoint)
+        .build()?;
+
+    let resource = Resource::builder_empty()
+        .with_attributes([KeyValue::new("service.name", service_name.to_string())])
+        .build();
+
     let tracer_provider = SdkTracerProvider::builder()
-        .with_simple_exporter(SpanExporter::default())
+        .with_sampler(Sampler::TraceIdRatioBased(sample_ratio))
+        .with_span_processor(
+            BatchSpanProcessor::builder(exporter)
+                .with_batch_config(batch_config)
+                .build(),
+        )
+        .with_resource(resource)
         .build();
 
     global::set_tracer_provider(tracer_provider.clone());

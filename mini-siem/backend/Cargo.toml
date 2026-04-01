@@ -35,7 +35,7 @@ tracing-opentelemetry = "0.32"
 # OpenTelemetry tracing
 opentelemetry = { version = "0.31", features = ["trace"] }
 opentelemetry_sdk = { version = "0.31", features = ["trace"] }
-opentelemetry-stdout = { version = "0.31", features = ["trace"] }
+opentelemetry_otlp = { package = "opentelemetry-otlp", version = "0.31", features = ["trace", "grpc-tonic"] }
 
 # Configuration
 config = "0.13"
