@@ -71,38 +71,11 @@ pub async fn ingest_log(
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
     
-    // Update Redis counter for total logs and publish aggregated stats (best-effort)
+    // Hot path stays write-only: the background stats task reads Redis and
+    // persists/broadcasts snapshots out of band.
     let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);
-    if let Ok(_) = state.redis.increment_counter(&format!("{}:total_logs", tenant_prefix), 86400).await {
-        // Try to read counters from Redis (L1 cache will be used if available)
-        let total_logs: Option<u32> = state.redis.get_counter(&format!("{}:total_logs", tenant_prefix)).await.ok().flatten();
-        let total_alerts: Option<u32> = state.redis.get_counter(&format!("{}:total_alerts", tenant_prefix)).await.ok().flatten();
-        let active_alerts: Option<u32> = state.redis.get_counter(&format!("{}:active_alerts", tenant_prefix)).await.ok().flatten();
-        let critical_alerts: Option<u32> = state.redis.get_counter(&format!("{}:critical_alerts", tenant_prefix)).await.ok().flatten();
-
-        if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (total_logs, total_alerts, active_alerts, critical_alerts) {
-            let stats = crate::types::DashboardStats {
-                tenant_id: claims.tenant_id.clone(),
-                total_logs: tl as i64,
-                total_alerts: ta as i64,
-                active_alerts: aa as i64,
-                critical_alerts: ca as i64,
-            };
-            let _ = state.stats_tx.send(stats);
-            let _ = state.db.save_stats(&claims.tenant_id, tl as i64, ta as i64, aa as i64, ca as i64).await;
-        } else {
-            // Fallback: compute from DB and seed Redis
-            if let Ok((tl, ta, aa, ca)) = state.db.get_stats(&claims.tenant_id).await {
-                let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
-                let _ = state.stats_tx.send(stats.clone());
-                // Seed Redis counters (best-effort)
-                let _ = state.redis.set_counter(&format!("{}:total_logs", tenant_prefix), tl as u64, Some(86400)).await;
-                let _ = state.redis.set_counter(&format!("{}:total_alerts", tenant_prefix), ta as u64, Some(86400)).await;
-                let _ = state.redis.set_counter(&format!("{}:active_alerts", tenant_prefix), aa as u64, Some(86400)).await;
-                let _ = state.redis.set_counter(&format!("{}:critical_alerts", tenant_prefix), ca as u64, Some(86400)).await;
-                let _ = state.db.save_stats(&claims.tenant_id, tl, ta, aa, ca).await;
-            }
-        }
+    if let Err(e) = state.redis.increment_counter(&format!("{}:total_logs", tenant_prefix), 86400).await {
+        tracing::warn!("failed to increment tenant log counter: {}", e);
     }
 
     HttpResponse::Accepted().json(IngestLogResponse {
@@ -194,37 +167,12 @@ pub async fn ingest_batch(
     }
     
     info!("📦 Accepted batch of {} logs", responses.len());
-    // Update Redis counter for total logs in one operation and publish aggregated stats (best-effort)
+    // Hot path stays write-only; background aggregation handles snapshots.
     if responses.len() > 0 {
-        let _ = state.redis.incr_by(&format!("siem:tenant:{}:stats:total_logs", claims.tenant_id), responses.len() as u64, 86400).await;
-    }
-
-    // Try to read counters from Redis
-    let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);
-    let total_logs: Option<u32> = state.redis.get_counter(&format!("{}:total_logs", tenant_prefix)).await.ok().flatten();
-    let total_alerts: Option<u32> = state.redis.get_counter(&format!("{}:total_alerts", tenant_prefix)).await.ok().flatten();
-    let active_alerts: Option<u32> = state.redis.get_counter(&format!("{}:active_alerts", tenant_prefix)).await.ok().flatten();
-    let critical_alerts: Option<u32> = state.redis.get_counter(&format!("{}:critical_alerts", tenant_prefix)).await.ok().flatten();
-
-    if let (Some(tl), Some(ta), Some(aa), Some(ca)) = (total_logs, total_alerts, active_alerts, critical_alerts) {
-        let stats = crate::types::DashboardStats {
-            tenant_id: claims.tenant_id.clone(),
-            total_logs: tl as i64,
-            total_alerts: ta as i64,
-            active_alerts: aa as i64,
-            critical_alerts: ca as i64,
-        };
-        let _ = state.stats_tx.send(stats);
-        let _ = state.db.save_stats(&claims.tenant_id, tl as i64, ta as i64, aa as i64, ca as i64).await;
-    } else if let Ok((tl, ta, aa, ca)) = state.db.get_stats(&claims.tenant_id).await {
-        let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
-        let _ = state.stats_tx.send(stats.clone());
-        // Seed Redis (best-effort)
-        let _ = state.redis.set_counter(&format!("{}:total_logs", tenant_prefix), tl as u64, Some(86400)).await;
-        let _ = state.redis.set_counter(&format!("{}:total_alerts", tenant_prefix), ta as u64, Some(86400)).await;
-        let _ = state.redis.set_counter(&format!("{}:active_alerts", tenant_prefix), aa as u64, Some(86400)).await;
-        let _ = state.redis.set_counter(&format!("{}:critical_alerts", tenant_prefix), ca as u64, Some(86400)).await;
-        let _ = state.db.save_stats(&claims.tenant_id, tl, ta, aa, ca).await;
+        let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);
+        if let Err(e) = state.redis.incr_by(&format!("{}:total_logs", tenant_prefix), responses.len() as u64, 86400).await {
+            tracing::warn!("failed to increment tenant log counter: {}", e);
+        }
     }
     HttpResponse::Accepted().json(responses)
 }
