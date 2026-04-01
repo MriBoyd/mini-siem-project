@@ -7,8 +7,6 @@ use tracing::{info, warn};
 use crate::api::server::AppState;
 use crate::db::cache::Cache;
 use crate::types::{Log, LogSeverity};
-use tokio::sync::mpsc::error::TrySendError;
-use std::sync::Arc;
 use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
@@ -55,28 +53,12 @@ pub async fn ingest_log(
     // truth for alerts/config; logs are indexed in Elasticsearch via the
     // separate indexer pipeline (Kafka -> indexer -> Elasticsearch).
 
-    // Try to enqueue into in-memory queue for downstream processing. If the queue
-    // is full, return `429 Too Many Requests` to signal backpressure.
-    let arc_log = Arc::new(log.clone());
-    match state.log_tx.try_send(arc_log.clone()) {
-        Ok(_) => {
-            // Also attempt to send to Kafka in background (best-effort)
-            let kafka = state.kafka.clone();
-            let a = arc_log.clone();
-            actix_web::rt::spawn(async move {
-                if let Err(e) = kafka.send_log(&*a).await {
-                    tracing::warn!("Failed to enqueue log to Kafka: {}", e);
-                }
-            });
-        }
-        Err(TrySendError::Full(_)) => {
-            warn!("Log channel full - rejecting request");
-            return HttpResponse::TooManyRequests().body("ingest queue full, try later");
-        }
-        Err(TrySendError::Closed(_)) => {
-            warn!("Log channel closed - rejecting request");
-            return HttpResponse::ServiceUnavailable().body("ingest service unavailable");
-        }
+    // Canonical ingest path: publish to Kafka only.
+    // Downstream detection and indexing consume from Kafka, so this avoids
+    // duplicate processing and inflated counters.
+    if let Err(e) = state.kafka.send_log(&log).await {
+        tracing::error!("Failed to enqueue log to Kafka: {}", e);
+        return HttpResponse::ServiceUnavailable().body("ingest unavailable");
     }
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
@@ -175,27 +157,11 @@ pub async fn ingest_batch(
             received_at: now,
         };
 
-        // We intentionally do not persist raw logs to Postgres in the batch
-        // ingest path. Logs are routed through Kafka and indexed into ES.
-        let arc_log = Arc::new(log.clone());
-        match state.log_tx.try_send(arc_log.clone()) {
-            Ok(_) => {
-                let kafka = state.kafka.clone();
-                let a = arc_log.clone();
-                actix_web::rt::spawn(async move {
-                    if let Err(e) = kafka.send_log(&*a).await {
-                        tracing::warn!("Failed to enqueue log to Kafka: {}", e);
-                    }
-                });
-            }
-            Err(TrySendError::Full(_)) => {
-                warn!("Log channel full - rejecting batch item");
-                return HttpResponse::TooManyRequests().body("ingest queue full, try later");
-            }
-            Err(TrySendError::Closed(_)) => {
-                warn!("Log channel closed - rejecting batch item");
-                return HttpResponse::ServiceUnavailable().body("ingest service unavailable");
-            }
+        // Canonical ingest path: publish each log to Kafka only.
+        // Detection and indexing are downstream consumers of Kafka.
+        if let Err(e) = state.kafka.send_log(&log).await {
+            tracing::error!("Failed to enqueue batch log to Kafka: {}", e);
+            return HttpResponse::ServiceUnavailable().body("ingest unavailable");
         }
 
         responses.push(IngestLogResponse {
