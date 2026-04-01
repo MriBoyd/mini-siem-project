@@ -6,6 +6,7 @@ use tracing::info;
 use tokio::time::{timeout, Duration};
 
 use crate::api::server::AppState;
+use crate::api::tenant::enforce_tenant_fixed_window;
 use crate::monitoring::bounded_tenant_label;
 use crate::db::cache::Cache;
 use crate::auth::jwt::Claims;
@@ -46,6 +47,16 @@ pub async fn ingest_log(
     let now = Utc::now();
     let tenant_label = bounded_tenant_label(&claims.tenant_id);
     Span::current().record("tenant_id", tracing::field::display(&tenant_label));
+
+    if let Err(response) = enforce_tenant_fixed_window(
+        &state,
+        &claims.tenant_id,
+        "ingest_events",
+        state.tenant_limits.ingest_events_per_minute,
+        1,
+    ).await {
+        return response;
+    }
     
     // Create log object
     let log = Log {
@@ -101,6 +112,16 @@ pub async fn recent_logs(req_head: HttpRequest, state: web::Data<AppState>) -> i
     let tenant_label = bounded_tenant_label(&claims.tenant_id);
     Span::current().record("tenant_id", tracing::field::display(&tenant_label));
 
+    if let Err(response) = enforce_tenant_fixed_window(
+        &state,
+        &claims.tenant_id,
+        "api_requests",
+        state.tenant_limits.api_requests_per_minute,
+        1,
+    ).await {
+        return response;
+    }
+
     if let Some(el) = state.elastic.borrow().clone() {
         let index_name = state.elastic_index.clone();
         let query = serde_json::json!({ "term": { "tenant_id": claims.tenant_id } });
@@ -144,6 +165,16 @@ pub async fn ingest_batch(
     };
     let tenant_label = bounded_tenant_label(&claims.tenant_id);
     Span::current().record("tenant_id", tracing::field::display(&tenant_label));
+
+    if let Err(response) = enforce_tenant_fixed_window(
+        &state,
+        &claims.tenant_id,
+        "ingest_events",
+        state.tenant_limits.ingest_events_per_minute,
+        req.logs.len().max(1),
+    ).await {
+        return response;
+    }
 
     let now = Utc::now();
     let mut responses = Vec::with_capacity(req.logs.len());

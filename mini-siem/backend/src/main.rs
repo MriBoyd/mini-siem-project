@@ -91,6 +91,8 @@ async fn main() -> anyhow::Result<()> {
     let detection_partition_key = cfg.detection_partition_key.clone();
     let kafka_lag_sample_interval_secs = cfg.kafka_lag_sample_interval_secs.max(1);
     let kafka_lag_watermark_timeout_ms = cfg.kafka_lag_watermark_timeout_ms.max(1);
+    let tenant_limits = cfg.tenant_limits();
+    let audit_signing_key = cfg.audit_signing_key.clone();
     mini_siem::monitoring::set_tenant_label_limit(cfg.metrics_max_tenant_labels);
 
     info!("✅ Configuration loaded. Connecting to database and message brokers...");
@@ -126,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
         // Automatically add a critical response policy to hit the webhook
         info!("🤖 Configuring Response Engine: Critical alerts will trigger Slack webhook");
         let action = Arc::new(WebhookAction::new("Critical Slack Hook", webhook_url));
-        response_engine.add_severity_policy(mini_siem::types::AlertSeverity::Critical, action).await;
+        response_engine.add_global_severity_policy(mini_siem::types::AlertSeverity::Critical, action).await;
     }
 
     // Create channels
@@ -475,6 +477,8 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         redis: redis.clone(),
         kafka: kafka.clone(),
+        tenant_limits,
+        audit_signing_key,
         elastic_index: elastic_index.clone(),
         ingest_tx: ingest_tx.clone(),
         log_tx: log_tx.clone(),

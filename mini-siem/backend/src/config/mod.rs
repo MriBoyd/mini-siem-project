@@ -20,10 +20,25 @@ pub struct Config {
     pub rate_limit_per_ip: usize,
     pub rate_limit_window_ms: u64,
     pub rate_limit_sample_rate: u32,
+    pub tenant_api_requests_per_minute: usize,
+    pub tenant_ingest_events_per_minute: usize,
+    pub tenant_rule_mutations_per_minute: usize,
+    pub tenant_ws_connections_per_minute: usize,
+    pub tenant_audit_queries_per_minute: usize,
     pub elasticsearch_host: String,
     pub elasticsearch_index: String,
     pub metrics_max_tenant_labels: usize,
     pub otel_service_name: String,
+    pub audit_signing_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TenantLimits {
+    pub api_requests_per_minute: usize,
+    pub ingest_events_per_minute: usize,
+    pub rule_mutations_per_minute: usize,
+    pub ws_connections_per_minute: usize,
+    pub audit_queries_per_minute: usize,
 }
 
 fn parse_csv_list(raw: &str) -> Vec<String> {
@@ -79,12 +94,32 @@ impl Config {
         let rate_limit_sample_rate = env::var("RATE_LIMIT_SAMPLE_RATE").ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(10);
+        let tenant_api_requests_per_minute = env::var("TENANT_API_REQUESTS_PER_MINUTE").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        let tenant_ingest_events_per_minute = env::var("TENANT_INGEST_EVENTS_PER_MINUTE").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10_000);
+        let tenant_rule_mutations_per_minute = env::var("TENANT_RULE_MUTATIONS_PER_MINUTE").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        let tenant_ws_connections_per_minute = env::var("TENANT_WS_CONNECTIONS_PER_MINUTE").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        let tenant_audit_queries_per_minute = env::var("TENANT_AUDIT_QUERIES_PER_MINUTE").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
         let elasticsearch_host = env::var("ELASTICSEARCH_HOST").unwrap_or_else(|_| "http://127.0.0.1:9200".to_string());
         let elasticsearch_index = env::var("ELASTICSEARCH_INDEX").unwrap_or_else(|_| "mini-siem-logs".to_string());
         let metrics_max_tenant_labels = env::var("METRICS_MAX_TENANT_LABELS").ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(128);
         let otel_service_name = env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "mini-siem-backend".to_string());
+        let audit_signing_key = match env::var("AUDIT_SIGNING_KEY") {
+            Ok(value) => value,
+            Err(_) if cfg!(debug_assertions) => "dev-audit-signing-key".to_string(),
+            Err(_) => return Err(anyhow!("AUDIT_SIGNING_KEY must be set in production")),
+        };
 
         Ok(Self {
             database_url,
@@ -104,10 +139,26 @@ impl Config {
             rate_limit_per_ip,
             rate_limit_window_ms,
             rate_limit_sample_rate,
+            tenant_api_requests_per_minute,
+            tenant_ingest_events_per_minute,
+            tenant_rule_mutations_per_minute,
+            tenant_ws_connections_per_minute,
+            tenant_audit_queries_per_minute,
             elasticsearch_host,
             elasticsearch_index,
             metrics_max_tenant_labels,
             otel_service_name,
+            audit_signing_key,
         })
+    }
+
+    pub fn tenant_limits(&self) -> TenantLimits {
+        TenantLimits {
+            api_requests_per_minute: self.tenant_api_requests_per_minute,
+            ingest_events_per_minute: self.tenant_ingest_events_per_minute,
+            rule_mutations_per_minute: self.tenant_rule_mutations_per_minute,
+            ws_connections_per_minute: self.tenant_ws_connections_per_minute,
+            audit_queries_per_minute: self.tenant_audit_queries_per_minute,
+        }
     }
 }

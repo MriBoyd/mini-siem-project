@@ -173,6 +173,33 @@ impl Cache for RedisCache {
         Ok(res == 1)
     }
 
+    async fn allow_fixed_window(&self, key: &str, window_seconds: u64, limit: u32, cost: u32) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let script = r#"
+        local key = KEYS[1]
+        local window = tonumber(ARGV[1])
+        local limit = tonumber(ARGV[2])
+        local cost = tonumber(ARGV[3])
+        local current = tonumber(redis.call('GET', key) or '0')
+        if (current + cost) <= limit then
+            current = redis.call('INCRBY', key, cost)
+            redis.call('EXPIRE', key, window)
+            return 1
+        end
+        return 0
+        "#;
+
+        let res: i32 = redis::Script::new(script)
+            .key(key)
+            .arg(window_seconds)
+            .arg(limit)
+            .arg(cost)
+            .invoke_async(&mut conn)
+            .await?;
+
+        Ok(res == 1)
+    }
+
     // Refresh token management
     async fn store_refresh_token(&self, user_id: &str, tenant_id: &str, token: &str, ttl_seconds: u64) -> Result<()> {
         let mut conn = self.conn.clone();

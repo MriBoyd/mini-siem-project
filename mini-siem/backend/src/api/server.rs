@@ -4,19 +4,22 @@ use tracing::info;
 use std::sync::Arc;
 use tokio::sync::{mpsc, broadcast};
 
-use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules};
+use crate::api::handlers::{logs, health, alerts, dashboard, auth, rules, audit};
 use crate::api::middleware::{auth::JwtAuth, telemetry::RequestTelemetry};
 use crate::db::PostgresDb;
 use crate::db::redis::RedisCache;
 use crate::queue::kafka::KafkaQueue;
 use crate::types::{Log, Alert};
 use crate::db::ElasticClient;
+use crate::config::TenantLimits;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<PostgresDb>,
     pub redis: RedisCache,
     pub kafka: Arc<KafkaQueue>,
+    pub tenant_limits: TenantLimits,
+    pub audit_signing_key: String,
     pub elastic_index: String,
     pub ingest_tx: mpsc::Sender<std::sync::Arc<Log>>,
     pub log_tx: mpsc::Sender<std::sync::Arc<Log>>,
@@ -91,6 +94,7 @@ pub async fn run_server(state: web::Data<AppState>, cors_allowed_origins: Vec<St
                     .service(rules::update_rule)
                     .service(rules::delete_rule)
                     .service(rules::toggle_rule)
+                        .service(audit::list_audit_events)
                     .service(web::resource("/ws/alerts").route(web::get().to(alerts::ws_alerts)))
             )
     })

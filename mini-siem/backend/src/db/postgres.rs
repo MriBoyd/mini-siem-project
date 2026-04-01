@@ -8,6 +8,7 @@ use crate::types::{Alert, Log};
     use crate::db::redis::RedisCache;
 use crate::db::models::user::User;
 use crate::db::models::rule::{DetectionRule, RuleCreate};
+use crate::db::models::audit::AuditEvent;
 use crate::db::cache::Cache;
 use serde_json::Value;
 use crate::auth::password::hash_password;
@@ -541,6 +542,68 @@ impl PostgresDb {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn latest_audit_hash(&self, tenant_id: &str) -> Result<Option<String>> {
+        let hash = query_scalar(
+            "SELECT event_hash FROM audit_events WHERE tenant_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(hash)
+    }
+
+    pub async fn insert_audit_event(&self, event: &AuditEvent) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO audit_events (
+                id, tenant_id, actor_user_id, actor_email, actor_roles, action,
+                resource_type, resource_id, target_tenant_id, request_id, metadata,
+                previous_hash, event_hash, signature, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            "#,
+        )
+        .bind(event.id)
+        .bind(&event.tenant_id)
+        .bind(&event.actor_user_id)
+        .bind(&event.actor_email)
+        .bind(&event.actor_roles)
+        .bind(&event.action)
+        .bind(&event.resource_type)
+        .bind(&event.resource_id)
+        .bind(&event.target_tenant_id)
+        .bind(&event.request_id)
+        .bind(&event.metadata)
+        .bind(&event.previous_hash)
+        .bind(&event.event_hash)
+        .bind(&event.signature)
+        .bind(event.created_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn list_audit_events(&self, tenant_id: &str, limit: i64) -> Result<Vec<AuditEvent>> {
+        let rows: Vec<AuditEvent> = query_as(
+            r#"
+            SELECT id, tenant_id, actor_user_id, actor_email, actor_roles, action, resource_type,
+                   resource_id, target_tenant_id, request_id, metadata, previous_hash, event_hash,
+                   signature, created_at
+            FROM audit_events
+            WHERE tenant_id = $1
+            ORDER BY created_at DESC, id DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
     }
 }
 

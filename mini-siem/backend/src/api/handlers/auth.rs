@@ -4,6 +4,7 @@ use uuid::Uuid;
 use tracing::error;
 
 use crate::api::server::AppState;
+use crate::api::tenant::enforce_tenant_fixed_window;
 use crate::auth::{hash_password, verify_password, create_claims, create_ws_claims, encode_jwt, generate_refresh_token, TokenPair, Claims};
 use crate::db::cache::Cache;
 use crate::db::models::user::{UserResponse};
@@ -43,7 +44,7 @@ pub async fn register(
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid email or password"}));
     }
 
-    let rate_limit_key = format!("rate_limit:register:{}", req.email);
+    let rate_limit_key = format!("rate_limit:register:{}:{}", req.tenant_id, req.email);
     match state.redis.allow_sliding_window(&rate_limit_key, 60000, 3).await {
         Ok(allowed) if !allowed => return HttpResponse::TooManyRequests().json(serde_json::json!({"error": "Too many registration attempts"})),
         Err(e) => {
@@ -89,7 +90,7 @@ pub async fn login(
     state: web::Data<AppState>,
     req: web::Json<LoginRequest>,
 ) -> impl Responder {
-    let rate_limit_key = format!("rate_limit:login:{}", req.email);
+    let rate_limit_key = format!("rate_limit:login:{}:{}", req.tenant_id, req.email);
     match state.redis.allow_sliding_window(&rate_limit_key, 60000, 5).await {
         Ok(allowed) if !allowed => return HttpResponse::TooManyRequests().json(serde_json::json!({"error": "Too many login attempts"})),
         Err(e) => {
@@ -218,6 +219,17 @@ pub async fn ws_token(
 
     let ws_claims = create_ws_claims(&claims.sub, &claims.tenant_id, &claims.email, claims.roles.iter().map(|s| s.as_str()).collect(), 60);
     let jti = ws_claims.jti.clone().unwrap_or_default();
+
+    if let Err(response) = enforce_tenant_fixed_window(
+        &state,
+        &claims.tenant_id,
+        "ws_connections",
+        state.tenant_limits.ws_connections_per_minute,
+        1,
+    ).await {
+        return response;
+    }
+
     let ws_token = match encode_jwt(&ws_claims) {
         Ok(t) => t,
         Err(e) => {

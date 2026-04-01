@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn, error};
 
 use crate::api::server::AppState;
+use crate::api::tenant::enforce_tenant_fixed_window;
 use crate::monitoring::bounded_tenant_label;
 use crate::auth::jwt::Claims;
 use crate::db::cache::Cache;
@@ -26,6 +27,16 @@ pub async fn list_alerts(req: HttpRequest, state: web::Data<AppState>) -> impl R
     let tenant_label = bounded_tenant_label(&claims.tenant_id);
     Span::current().record("tenant_id", tracing::field::display(&tenant_label));
     metrics::counter!("siem_tenant_alert_requests_total", 1, "tenant" => tenant_label.clone(), "kind" => "list");
+
+    if let Err(response) = enforce_tenant_fixed_window(
+        &state,
+        &claims.tenant_id,
+        "api_requests",
+        state.tenant_limits.api_requests_per_minute,
+        1,
+    ).await {
+        return response;
+    }
 
     match state.db.get_recent_alerts(&claims.tenant_id, 50).await {
         Ok(alerts) => HttpResponse::Ok().json(alerts),
@@ -60,6 +71,17 @@ pub async fn ws_alerts(
     let tenant_label = bounded_tenant_label(&claims.tenant_id);
     Span::current().record("tenant_id", tracing::field::display(&tenant_label));
     metrics::counter!("siem_tenant_alert_requests_total", 1, "tenant" => tenant_label.clone(), "kind" => "ws_connect");
+
+    if let Err(response) = enforce_tenant_fixed_window(
+        &state,
+        &claims.tenant_id,
+        "ws_connections",
+        state.tenant_limits.ws_connections_per_minute,
+        1,
+    ).await {
+        let _ = response;
+        return Err(actix_web::error::ErrorTooManyRequests("tenant quota exceeded"));
+    }
 
     if claims.token_use.as_deref() == Some("ws") {
         let jti = match claims.jti.as_deref() {

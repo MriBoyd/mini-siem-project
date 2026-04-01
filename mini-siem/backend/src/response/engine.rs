@@ -6,10 +6,10 @@ use crate::types::{Alert, AlertSeverity};
 use super::actions::ResponseAction;
 
 pub struct ResponseEngine {
-    // Map: Rule ID -> List of Actions
-    rule_policies: Arc<RwLock<HashMap<String, Vec<Arc<dyn ResponseAction>>>>>,
-    // Map: Severity -> List of Actions (Global default for severity)
-    severity_policies: Arc<RwLock<HashMap<AlertSeverity, Vec<Arc<dyn ResponseAction>>>>>,
+    // Map: (Tenant ID, Rule ID) -> List of Actions
+    rule_policies: Arc<RwLock<HashMap<(String, String), Vec<Arc<dyn ResponseAction>>>>>,
+    // Map: (Tenant ID, Severity) -> List of Actions, where "*" is the global fallback.
+    severity_policies: Arc<RwLock<HashMap<(String, AlertSeverity), Vec<Arc<dyn ResponseAction>>>>>,
 }
 
 impl ResponseEngine {
@@ -20,18 +20,22 @@ impl ResponseEngine {
         }
     }
 
-    pub async fn add_rule_policy(&self, rule_id: &str, action: Arc<dyn ResponseAction>) {
+    pub async fn add_rule_policy(&self, tenant_id: &str, rule_id: &str, action: Arc<dyn ResponseAction>) {
         let mut policies = self.rule_policies.write().await;
-        policies.entry(rule_id.to_string())
+        policies.entry((tenant_id.to_string(), rule_id.to_string()))
             .or_insert_with(Vec::new)
             .push(action);
     }
 
-    pub async fn add_severity_policy(&self, severity: AlertSeverity, action: Arc<dyn ResponseAction>) {
+    pub async fn add_severity_policy(&self, tenant_id: Option<&str>, severity: AlertSeverity, action: Arc<dyn ResponseAction>) {
         let mut policies = self.severity_policies.write().await;
-        policies.entry(severity)
+        policies.entry((tenant_id.unwrap_or("*").to_string(), severity))
             .or_insert_with(Vec::new)
             .push(action);
+    }
+
+    pub async fn add_global_severity_policy(&self, severity: AlertSeverity, action: Arc<dyn ResponseAction>) {
+        self.add_severity_policy(None, severity, action).await;
     }
 
     pub async fn handle_alert(&self, alert: &Alert) {
@@ -40,7 +44,11 @@ impl ResponseEngine {
         // 1. Check specific rule policies
         {
             let rule_policies = self.rule_policies.read().await;
-            if let Some(actions) = rule_policies.get(&alert.rule_id) {
+            if let Some(actions) = rule_policies.get(&(alert.tenant_id.clone(), alert.rule_id.clone())) {
+                for action in actions {
+                    actions_to_run.push(Arc::clone(action));
+                }
+            } else if let Some(actions) = rule_policies.get(&("*".to_string(), alert.rule_id.clone())) {
                 for action in actions {
                     actions_to_run.push(Arc::clone(action));
                 }
@@ -50,7 +58,12 @@ impl ResponseEngine {
         // 2. Check severity policies
         {
             let severity_policies = self.severity_policies.read().await;
-            if let Some(actions) = severity_policies.get(&alert.severity) {
+            if let Some(actions) = severity_policies.get(&(alert.tenant_id.clone(), alert.severity)) {
+                for action in actions {
+                    actions_to_run.push(Arc::clone(action));
+                }
+            }
+            if let Some(actions) = severity_policies.get(&("*".to_string(), alert.severity)) {
                 for action in actions {
                     actions_to_run.push(Arc::clone(action));
                 }

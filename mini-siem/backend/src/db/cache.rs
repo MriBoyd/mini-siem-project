@@ -15,6 +15,7 @@ pub trait Cache: Send + Sync {
     async fn get_ip_reputation(&self, ip: &str) -> Result<Option<u8>>;
     
     async fn allow_sliding_window(&self, key: &str, window_ms: u64, limit: u32) -> Result<bool>;
+    async fn allow_fixed_window(&self, key: &str, window_seconds: u64, limit: u32, cost: u32) -> Result<bool>;
     
     async fn store_refresh_token(&self, user_id: &str, tenant_id: &str, token: &str, ttl_seconds: u64) -> Result<()>;
     async fn get_user_id_by_refresh_token(&self, token: &str) -> Result<Option<String>>;

@@ -1,6 +1,7 @@
 use actix_web::{get, web, HttpResponse, Responder, HttpRequest, HttpMessage};
 
 use crate::api::server::AppState;
+use crate::api::tenant::enforce_tenant_fixed_window;
 use crate::auth::jwt::Claims;
 use crate::db::cache::Cache;
 
@@ -16,6 +17,16 @@ pub async fn get_stats(req: HttpRequest, state: web::Data<AppState>) -> impl Res
     let roles = &claims.roles;
     if !(roles.contains(&"analyst".to_string()) || roles.contains(&"admin".to_string())) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error":"insufficient role"}));
+    }
+
+    if let Err(response) = enforce_tenant_fixed_window(
+        &state,
+        &claims.tenant_id,
+        "api_requests",
+        state.tenant_limits.api_requests_per_minute,
+        1,
+    ).await {
+        return response;
     }
 
     let tenant_prefix = format!("siem:tenant:{}:stats", claims.tenant_id);
