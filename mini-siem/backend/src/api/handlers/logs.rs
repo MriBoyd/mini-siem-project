@@ -2,7 +2,7 @@ use actix_web::{post, web, HttpResponse, Responder, HttpRequest, HttpMessage};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{Utc, DateTime};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::api::server::AppState;
 use crate::db::cache::Cache;

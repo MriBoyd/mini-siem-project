@@ -6,9 +6,12 @@ use crate::db::models::rule::{RuleCreate, RuleUpdate};
 
 #[get("/rules")]
 pub async fn list_rules(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
-    let claims = match req.extensions().get::<Claims>() {
-        Some(c) => c,
-        None => return HttpResponse::Unauthorized().finish(),
+    let claims = {
+        let exts = req.extensions();
+        match exts.get::<Claims>().cloned() {
+            Some(c) => c,
+            None => return HttpResponse::Unauthorized().finish(),
+        }
     };
 
     match state.db.get_all_rules(&claims.tenant_id).await {
@@ -23,9 +26,12 @@ pub async fn create_rule(
     state: web::Data<AppState>,
     body: web::Json<RuleCreate>,
 ) -> impl Responder {
-    let claims = match http_req.extensions().get::<Claims>() {
-        Some(c) => c,
-        None => return HttpResponse::Unauthorized().finish(),
+    let claims = {
+        let exts = http_req.extensions();
+        match exts.get::<Claims>().cloned() {
+            Some(c) => c,
+            None => return HttpResponse::Unauthorized().finish(),
+        }
     };
 
     let mut rule = body.into_inner();
@@ -43,9 +49,12 @@ pub async fn get_rule(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
-    let claims = match req.extensions().get::<Claims>() {
-        Some(c) => c,
-        None => return HttpResponse::Unauthorized().finish(),
+    let claims = {
+        let exts = req.extensions();
+        match exts.get::<Claims>().cloned() {
+            Some(c) => c,
+            None => return HttpResponse::Unauthorized().finish(),
+        }
     };
 
     let id = path.into_inner();
@@ -63,9 +72,12 @@ pub async fn update_rule(
     path: web::Path<Uuid>,
     body: web::Json<RuleUpdate>,
 ) -> impl Responder {
-    let claims = match http_req.extensions().get::<Claims>() {
-        Some(c) => c,
-        None => return HttpResponse::Unauthorized().finish(),
+    let claims = {
+        let exts = http_req.extensions();
+        match exts.get::<Claims>().cloned() {
+            Some(c) => c,
+            None => return HttpResponse::Unauthorized().finish(),
+        }
     };
 
     let id = path.into_inner();
@@ -81,9 +93,12 @@ pub async fn delete_rule(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
-    let claims = match req.extensions().get::<Claims>() {
-        Some(c) => c,
-        None => return HttpResponse::Unauthorized().finish(),
+    let claims = {
+        let exts = req.extensions();
+        match exts.get::<Claims>().cloned() {
+            Some(c) => c,
+            None => return HttpResponse::Unauthorized().finish(),
+        }
     };
 
     let id = path.into_inner();
@@ -99,9 +114,12 @@ pub async fn toggle_rule(
     state: web::Data<AppState>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
-    let claims = match req.extensions().get::<Claims>() {
-        Some(c) => c,
-        None => return HttpResponse::Unauthorized().finish(),
+    let claims = {
+        let exts = req.extensions();
+        match exts.get::<Claims>().cloned() {
+            Some(c) => c,
+            None => return HttpResponse::Unauthorized().finish(),
+        }
     };
 
     let id = path.into_inner();
