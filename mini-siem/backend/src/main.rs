@@ -1,5 +1,5 @@
 use actix_web::web;
-use tokio::{signal, task, sync::{broadcast, mpsc}};
+use tokio::{signal, task, sync::{broadcast, mpsc, watch}};
 use tracing::{info, error};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -125,13 +125,17 @@ async fn main() -> anyhow::Result<()> {
     let (index_tx, mut index_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
     let elastic_host = cfg.elasticsearch_host.clone();
     let elastic_index = cfg.elasticsearch_index.clone();
-    let elastic_client = match mini_siem::db::ElasticClient::new(&elastic_host).await {
-        Ok(c) => Arc::new(c),
-        Err(e) => {
-            error!("Failed to connect to Elasticsearch (indexing disabled): {}", e);
-            Arc::new(mini_siem::db::ElasticClient::new(&elastic_host).await.unwrap_or_else(|_| panic!("es init")))
+    let (elastic_tx, elastic_rx) = watch::channel::<Option<Arc<mini_siem::db::ElasticClient>>>(None);
+    match mini_siem::db::ElasticClient::new(&elastic_host).await {
+        Ok(c) => {
+            let client = Arc::new(c);
+            let _ = elastic_tx.send(Some(client));
+            info!("✅ Elasticsearch connected: indexing enabled");
         }
-    };
+        Err(e) => {
+            error!("Failed to connect to Elasticsearch at startup, continuing with indexing disabled: {}", e);
+        }
+    }
     let mut kafka_shutdown_rx = shutdown_tx.subscribe();
     let log_channel_full_counter = std::sync::Arc::new(AtomicUsize::new(0));
     // Start Prometheus exporter and monitoring
@@ -171,11 +175,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Spawn Elasticsearch indexer worker: batch documents for bulk indexing
-    let es = elastic_client.clone();
+    let mut elastic_rx_for_indexer = elastic_rx.clone();
     let idx = elastic_index.clone();
     let kafka_for_indexer = kafka.clone();
     let _es_handle = task::spawn(async move {
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{timeout, sleep, Duration};
         use mini_siem::queue::kafka::LOGS_DLQ_TOPIC;
 
         let mut buffer: Vec<std::sync::Arc<types::Log>> = Vec::with_capacity(1024);
@@ -209,6 +213,35 @@ async fn main() -> anyhow::Result<()> {
 
             // prepare slice of &Log
             let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
+
+            let mut es_client = elastic_rx_for_indexer.borrow().clone();
+            if es_client.is_none() {
+                match timeout(Duration::from_secs(5), elastic_rx_for_indexer.changed()).await {
+                    Ok(Ok(())) => {
+                        es_client = elastic_rx_for_indexer.borrow().clone();
+                    }
+                    Ok(Err(_)) | Err(_) => {}
+                }
+            }
+
+            if es_client.is_none() {
+                error!("Elasticsearch unavailable, sending batch to DLQ until recovery");
+                for a in &buffer {
+                    if let Err(e) = kafka_for_indexer.send_log_to(LOGS_DLQ_TOPIC, &*a).await {
+                        error!("failed to publish log to DLQ: {}", e);
+                        metrics::counter!("siem_logs_index_dlq_errors_total", 1);
+                    } else {
+                        metrics::counter!("siem_logs_index_dlq_total", 1);
+                    }
+                }
+                buffer.clear();
+                sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+
+            let Some(es) = es_client else {
+                continue;
+            };
 
             // retry loop with exponential backoff
             let mut attempt = 0usize;
@@ -260,7 +293,34 @@ async fn main() -> anyhow::Result<()> {
         log_tx: log_tx.clone(),
         alert_tx: alert_tx.clone(),
         stats_tx: stats_tx.clone(),
-        elastic: Some(elastic_client.clone()),
+        elastic: elastic_rx.clone(),
+    });
+
+    let elastic_reconnect_tx = elastic_tx.clone();
+    let elastic_reconnect_rx = elastic_rx.clone();
+    let elastic_reconnect_host = elastic_host.clone();
+    let _elastic_reconnect_handle = task::spawn(async move {
+        use tokio::time::{sleep, Duration};
+
+        loop {
+            sleep(Duration::from_secs(30)).await;
+
+            if elastic_reconnect_rx.borrow().is_some() {
+                continue;
+            }
+
+            match mini_siem::db::ElasticClient::new(&elastic_reconnect_host).await {
+                Ok(c) => {
+                    let client = Arc::new(c);
+                    if elastic_reconnect_tx.send(Some(client)).is_ok() {
+                        info!("✅ Elasticsearch reconnected, indexing re-enabled");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Elasticsearch still unavailable: {}", e);
+                }
+            }
+        }
     });
 
     // Start dedicated alert worker to process alerts from Kafka asynchronously

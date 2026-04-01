@@ -20,7 +20,7 @@ pub struct AppState {
     pub log_tx: mpsc::Sender<std::sync::Arc<Log>>,
     pub alert_tx: broadcast::Sender<Alert>,
     pub stats_tx: broadcast::Sender<crate::types::DashboardStats>,
-    pub elastic: Option<Arc<ElasticClient>>,
+    pub elastic: tokio::sync::watch::Receiver<Option<Arc<ElasticClient>>>,
 }
 
 pub async fn run_server(state: web::Data<AppState>) -> std::io::Result<()> {

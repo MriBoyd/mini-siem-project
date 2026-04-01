@@ -121,9 +121,10 @@ pub async fn ingest_log(
 #[actix_web::get("/api/v1/logs/recent")]
 pub async fn recent_logs(state: web::Data<AppState>) -> impl Responder {
     // Return recent logs from Elasticsearch for UI compatibility.
-    if let Some(el) = state.elastic.as_ref() {
+    if let Some(el) = state.elastic.borrow().clone() {
         let q = serde_json::json!({ "match_all": {} });
-        match el.as_ref().search(&crate::config::Config::from_env().unwrap().elasticsearch_index, q, 0, 50).await {
+        let index_name = std::env::var("ELASTICSEARCH_INDEX").unwrap_or_else(|_| "mini-siem-logs".to_string());
+        match el.as_ref().search(&index_name, q, 0, 50).await {
             Ok(v) => {
                 // extract hits -> _source using JSON pointer
                 let mut res: Vec<Value> = Vec::new();
