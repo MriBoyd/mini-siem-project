@@ -11,6 +11,7 @@ use crate::db::models::user::{UserResponse};
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
+    #[serde(default)]
     pub tenant_id: String,
     pub email: String,
     pub password: String,
@@ -18,6 +19,7 @@ pub struct RegisterRequest {
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
+    #[serde(default)]
     pub tenant_id: String,
     pub email: String,
     pub password: String,
@@ -25,8 +27,17 @@ pub struct LoginRequest {
 
 #[derive(Deserialize)]
 pub struct RefreshRequest {
+    #[serde(default)]
     pub tenant_id: String,
     pub refresh_token: String,
+}
+
+fn tenant_or_default(tenant_id: &str) -> &str {
+    if tenant_id.is_empty() {
+        "default"
+    } else {
+        tenant_id
+    }
 }
 
 #[derive(Serialize)]
@@ -40,11 +51,13 @@ pub async fn register(
     state: web::Data<AppState>,
     req: web::Json<RegisterRequest>,
 ) -> impl Responder {
+    let tenant_id = tenant_or_default(&req.tenant_id);
+
     if req.email.is_empty() || req.password.len() < 8 {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid email or password"}));
     }
 
-    let rate_limit_key = format!("rate_limit:register:{}:{}", req.tenant_id, req.email);
+    let rate_limit_key = format!("rate_limit:register:{}:{}", tenant_id, req.email);
     match state.redis.allow_sliding_window(&rate_limit_key, 60000, 3).await {
         Ok(allowed) if !allowed => return HttpResponse::TooManyRequests().json(serde_json::json!({"error": "Too many registration attempts"})),
         Err(e) => {
@@ -55,7 +68,7 @@ pub async fn register(
     }
 
     // Check pre-existence (optional optimization)
-    match state.db.get_user_by_email(&req.tenant_id, &req.email).await {
+    match state.db.get_user_by_email(tenant_id, &req.email).await {
         Ok(Some(_)) => return HttpResponse::Conflict().json(serde_json::json!({"error": "User already exists"})),
         Err(e) => {
             error!("Database error: {}", e);
@@ -72,7 +85,7 @@ pub async fn register(
         }
     };
 
-    match state.db.create_user(&req.tenant_id, &req.email, &password_hash, "user").await {
+    match state.db.create_user(tenant_id, &req.email, &password_hash, "user").await {
         Ok(user) => HttpResponse::Created().json(UserResponse::from(user)),
         Err(e) => {
             // Check for unique constraint violation
@@ -90,7 +103,9 @@ pub async fn login(
     state: web::Data<AppState>,
     req: web::Json<LoginRequest>,
 ) -> impl Responder {
-    let rate_limit_key = format!("rate_limit:login:{}:{}", req.tenant_id, req.email);
+    let tenant_id = tenant_or_default(&req.tenant_id);
+
+    let rate_limit_key = format!("rate_limit:login:{}:{}", tenant_id, req.email);
     match state.redis.allow_sliding_window(&rate_limit_key, 60000, 5).await {
         Ok(allowed) if !allowed => return HttpResponse::TooManyRequests().json(serde_json::json!({"error": "Too many login attempts"})),
         Err(e) => {
@@ -100,7 +115,7 @@ pub async fn login(
         _ => {}
     }
 
-    let user = match state.db.get_user_by_email(&req.tenant_id, &req.email).await {
+    let user = match state.db.get_user_by_email(tenant_id, &req.email).await {
         Ok(Some(u)) => u,
         Ok(None) => return HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid credentials"})),
         Err(e) => {
@@ -141,6 +156,8 @@ pub async fn refresh(
     state: web::Data<AppState>,
     req: web::Json<RefreshRequest>,
 ) -> impl Responder {
+    let tenant_id = tenant_or_default(&req.tenant_id);
+
     let user_id_str = match state.redis.get_user_id_by_refresh_token(&req.refresh_token).await {
         Ok(Some(id)) => id,
         Ok(None) => return HttpResponse::Unauthorized().json(serde_json::json!({"error": "Invalid or expired refresh token"})),
@@ -156,7 +173,7 @@ pub async fn refresh(
         Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Internal server error"})),
     };
 
-    let user = match state.db.get_user_by_id(&req.tenant_id, user_id).await {
+    let user = match state.db.get_user_by_id(tenant_id, user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => return HttpResponse::Unauthorized().finish(),
         Err(e) => {
