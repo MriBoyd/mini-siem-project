@@ -48,6 +48,9 @@ export default function DashboardPage() {
         </div>
         <div className="flex items-center gap-3">
           <Button variant="outline" asChild>
+            <Link href="/reliability">Reliability</Link>
+          </Button>
+          <Button variant="outline" asChild>
             <Link href="/cost">Cost</Link>
           </Button>
           <Button variant="outline" asChild>

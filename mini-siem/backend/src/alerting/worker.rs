@@ -9,6 +9,7 @@ use crate::db::redis::RedisCache;
 use crate::response::engine::ResponseEngine;
 use crate::types::{Alert, AlertSeverity};
 use crate::queue::kafka::KafkaQueue;
+use crate::reliability::record_alert_delivery_latency;
 
 /// Spawn an alert worker that consumes `siem-alerts` from Kafka, persists alerts,
 /// updates Redis counters, triggers response engine actions, and broadcasts alerts.
@@ -47,6 +48,8 @@ pub async fn spawn_alert_worker(
             tokio::select! {
                 Some(alert) = rx.recv() => {
                     info!("⬇️  Processing alert {} from Kafka", alert.id);
+                    let delivery_latency_ms = (chrono::Utc::now() - alert.first_seen).num_milliseconds().max(0) as f64;
+                    let _ = record_alert_delivery_latency(&redis_for_worker, delivery_latency_ms).await;
                     let _ = redis_for_worker.set_string("siem:health:alert_pipeline_last_seen", &chrono::Utc::now().timestamp().to_string(), Some(300)).await;
                     // Enqueue to DB batcher via the internal channel. If the channel is full,
                     // fallback to immediate DB write to avoid data loss.

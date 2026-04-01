@@ -8,3 +8,4 @@ pub mod audit;
 pub mod compliance;
 pub mod case;
 pub mod data_cost;
+pub mod reliability;

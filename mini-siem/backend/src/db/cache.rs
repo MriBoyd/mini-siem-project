@@ -31,6 +31,9 @@ pub trait Cache: Send + Sync {
     async fn zpopmin(&self, key: &str) -> Result<Option<String>>;
     async fn zrem(&self, key: &str, member: &str) -> Result<()>;
 
+    async fn lpush_trim(&self, key: &str, value: &str, max_len: usize, expiry_seconds: Option<u64>) -> Result<()>;
+    async fn lrange(&self, key: &str, start: isize, stop: isize) -> Result<Vec<String>>;
+
     async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()>;
     async fn get_string(&self, key: &str) -> Result<Option<String>>;
     async fn ping(&self) -> Result<()>;

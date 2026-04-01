@@ -314,6 +314,23 @@ impl Cache for RedisCache {
         Ok(())
     }
 
+    async fn lpush_trim(&self, key: &str, value: &str, max_len: usize, expiry_seconds: Option<u64>) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.lpush(key, value).await?;
+        let end = max_len.saturating_sub(1) as isize;
+        let _: () = conn.ltrim(key, 0, end).await?;
+        if let Some(expiry_seconds) = expiry_seconds {
+            let _: () = conn.expire(key, expiry_seconds as i64).await?;
+        }
+        Ok(())
+    }
+
+    async fn lrange(&self, key: &str, start: isize, stop: isize) -> Result<Vec<String>> {
+        let mut conn = self.conn.clone();
+        let values: Vec<String> = conn.lrange(key, start, stop).await?;
+        Ok(values)
+    }
+
     async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()> {
         let mut conn = self.conn.clone();
         let _: () = conn.set(key, value).await?;

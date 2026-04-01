@@ -129,6 +129,38 @@ export interface TenantDataCostPolicyUpdate {
   team_budgets?: Record<string, number>;
 }
 
+export interface ReliabilitySloSnapshot {
+  ingest_availability_target_percent: number;
+  ingest_availability_observed_percent: number;
+  detection_latency_target_p95_ms: number;
+  detection_latency_p95_ms: number;
+  detection_latency_p99_ms: number;
+  alert_delivery_latency_target_p95_ms: number;
+  alert_delivery_latency_p95_ms: number;
+  alert_delivery_latency_p99_ms: number;
+  sample_count: number;
+  status: string;
+}
+
+export interface ReliabilityReportRecord {
+  id: string;
+  tenant_id: string;
+  report_type: string;
+  drill_name: string;
+  status: string;
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  summary_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ReliabilityOverview {
+  tenant_id: string;
+  snapshot: ReliabilitySloSnapshot;
+  recent_reports: ReliabilityReportRecord[];
+}
+
 export interface DashboardStats {
   tenant_id?: string;
   total_logs: number;

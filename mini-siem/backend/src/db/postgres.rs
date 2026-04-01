@@ -12,6 +12,7 @@ use crate::db::models::audit::AuditEvent;
 use crate::db::models::compliance::TenantCompliancePolicy;
 use crate::db::models::case::{CaseRecord, CasePlaybook, CaseTimelineEvent, CaseStatus};
 use crate::db::models::data_cost::TenantDataCostPolicy;
+use crate::db::models::reliability::{ReliabilityReportCreate, ReliabilityReportRecord};
 use crate::db::cache::Cache;
 use serde_json::Value;
 use crate::auth::password::hash_password;
@@ -805,6 +806,49 @@ impl PostgresDb {
         .await?;
 
         Ok(record)
+    }
+
+    pub async fn insert_reliability_report(&self, report: &ReliabilityReportCreate) -> Result<ReliabilityReportRecord> {
+        let duration_ms = (report.completed_at - report.started_at).num_milliseconds();
+        let record = sqlx::query_as::<_, ReliabilityReportRecord>(
+            r#"
+            INSERT INTO reliability_reports (
+                id, tenant_id, report_type, drill_name, status, started_at, completed_at, duration_ms, summary_json, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            RETURNING id, tenant_id, report_type, drill_name, status, started_at, completed_at, duration_ms, summary_json, created_at
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(&report.tenant_id)
+        .bind(&report.report_type)
+        .bind(&report.drill_name)
+        .bind(&report.status)
+        .bind(report.started_at)
+        .bind(report.completed_at)
+        .bind(duration_ms)
+        .bind(&report.summary_json)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(record)
+    }
+
+    pub async fn list_reliability_reports(&self, tenant_id: &str, limit: i64) -> Result<Vec<ReliabilityReportRecord>> {
+        let rows = sqlx::query_as::<_, ReliabilityReportRecord>(
+            r#"
+            SELECT id, tenant_id, report_type, drill_name, status, started_at, completed_at, duration_ms, summary_json, created_at
+            FROM reliability_reports
+            WHERE tenant_id = $1 OR tenant_id = ''
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
     }
 
     async fn ensure_default_case_playbooks(&self, tenant_id: &str) -> Result<()> {

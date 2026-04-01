@@ -11,6 +11,7 @@ use crate::types::LogTag;
 use crate::queue::kafka::KafkaQueue;
 use crate::db::{PostgresDb, RedisCache};
 use crate::response::engine::ResponseEngine;
+use crate::reliability::record_detection_latency;
 use super::compiled_rule::CompiledRule;
 use super::rules::{
     brute_force::BruteForceRule,
@@ -355,6 +356,7 @@ impl DetectionEngine {
             }
             let proc_dur = proc_start.elapsed().as_secs_f64();
             metrics::histogram!("siem_processing_latency_seconds", proc_dur);
+            let _ = record_detection_latency(&self.redis, proc_dur * 1000.0).await;
         }
         
         // Handle alerts: enqueue to Kafka for async processing by workers.

@@ -10,7 +10,7 @@ use mini_siem::db::cache::Cache;
 use mini_siem::queue::kafka::KafkaQueue;
 use mini_siem::response::engine::ResponseEngine;
 use mini_siem::response::actions::WebhookAction;
-use mini_siem::{api, types, detection, alerting, config, auth};
+use mini_siem::{api, types, detection, alerting, config, auth, reliability};
 use rustc_hash::FxHasher;
 use std::time::{Duration, Instant};
 use chrono::Utc;
@@ -549,6 +549,100 @@ async fn main() -> anyhow::Result<()> {
         stats_tx: stats_tx.clone(),
         elastic: elastic_rx.clone(),
     });
+
+    let reliability_state = app_state.clone();
+    let mut reliability_sample_shutdown_rx = shutdown_tx.subscribe();
+    let reliability_sample_handle = task::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(e) = reliability::record_ingest_availability_sample(&reliability_state).await {
+                        error!("Failed to record reliability availability sample: {}", e);
+                    }
+                }
+                _ = reliability_sample_shutdown_rx.recv() => {
+                    info!("🛑 Reliability sampler received shutdown");
+                    break;
+                }
+            }
+        }
+    });
+    task_registry.push("reliability_sampler", reliability_sample_handle);
+
+    let reliability_weekly_state = app_state.clone();
+    let mut reliability_weekly_shutdown_rx = shutdown_tx.subscribe();
+    let reliability_weekly_handle = task::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 60 * 60));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let drill_started_at = chrono::Utc::now();
+
+                    match reliability::replay_recent_logs(&reliability_weekly_state, "", 25).await {
+                        Ok(summary) => {
+                            let status = if summary.get("replayed").and_then(|value| value.as_u64()).unwrap_or(0) > 0 { "passed" } else { "degraded" };
+                            let report = mini_siem::db::models::reliability::ReliabilityReportCreate {
+                                tenant_id: String::new(),
+                                report_type: "replay_drill".to_string(),
+                                drill_name: "weekly-auto-replay-drill".to_string(),
+                                status: status.to_string(),
+                                started_at: drill_started_at,
+                                completed_at: chrono::Utc::now(),
+                                summary_json: summary,
+                            };
+                            if let Err(e) = reliability::create_reliability_report(&reliability_weekly_state, report).await {
+                                error!("Failed to store weekly replay drill report: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Failed to run weekly replay drill: {}", e),
+                    }
+
+                    let chaos_started_at = chrono::Utc::now();
+                    let chaos_summary = reliability::health_probe_summary(&reliability_weekly_state).await;
+                    let chaos_status = if chaos_summary.get("all_healthy").and_then(|value| value.as_bool()).unwrap_or(false) { "passed" } else { "failed" };
+                    let chaos_report = mini_siem::db::models::reliability::ReliabilityReportCreate {
+                        tenant_id: String::new(),
+                        report_type: "chaos_drill".to_string(),
+                        drill_name: "weekly-auto-chaos-drill".to_string(),
+                        status: chaos_status.to_string(),
+                        started_at: chaos_started_at,
+                        completed_at: chrono::Utc::now(),
+                        summary_json: chaos_summary,
+                    };
+                    if let Err(e) = reliability::create_reliability_report(&reliability_weekly_state, chaos_report).await {
+                        error!("Failed to store weekly chaos drill report: {}", e);
+                    }
+
+                    match reliability::build_reliability_overview(&reliability_weekly_state, "").await {
+                        Ok(overview) => {
+                            let report = mini_siem::db::models::reliability::ReliabilityReportCreate {
+                                tenant_id: String::new(),
+                                report_type: "weekly_summary".to_string(),
+                                drill_name: "weekly-reliability-summary".to_string(),
+                                status: overview.snapshot.status.clone(),
+                                started_at: chrono::Utc::now(),
+                                completed_at: chrono::Utc::now(),
+                                summary_json: serde_json::json!({
+                                    "snapshot": overview.snapshot,
+                                    "recent_reports": overview.recent_reports.len(),
+                                }),
+                            };
+                            if let Err(e) = reliability::create_reliability_report(&reliability_weekly_state, report).await {
+                                error!("Failed to store weekly reliability summary: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Failed to build weekly reliability summary: {}", e),
+                    }
+                }
+                _ = reliability_weekly_shutdown_rx.recv() => {
+                    info!("🛑 Weekly reliability reporter received shutdown");
+                    break;
+                }
+            }
+        }
+    });
+    task_registry.push("reliability_weekly_report", reliability_weekly_handle);
 
     let elastic_reconnect_tx = elastic_tx.clone();
     let elastic_reconnect_rx = elastic_rx.clone();
