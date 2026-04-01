@@ -1,5 +1,5 @@
 use actix_web::{post, get, web, HttpResponse, Responder, HttpRequest, HttpMessage};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use tracing::error;
 

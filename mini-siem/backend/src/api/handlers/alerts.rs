@@ -5,6 +5,7 @@ use tracing::{info, warn, error};
 
 use crate::api::server::AppState;
 use crate::auth::jwt::Claims;
+use crate::db::cache::Cache;
 
 #[get("/alerts")]
 pub async fn list_alerts(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
