@@ -352,22 +352,19 @@ impl PostgresDb {
         Ok(alerts)
     }
 
-    pub async fn get_stats(&self, _tenant_id: &str) -> Result<(i64, i64, i64, i64)> {
-        if !_tenant_id.is_empty() {
-            return Ok((0, 0, 0, 0));
-        }
-
-        // Read aggregated counters from the singleton `system_stats` row.
-        // The periodic stats sync task writes these values from Redis, so
-        // dashboard queries should rely on that persisted snapshot instead
-        // of counting raw logs (which are no longer persisted in Postgres).
-        // Use dynamic query to avoid compile-time verification which requires
-        // the database schema to be present at build time (CI/local dev may not have it).
+    pub async fn get_stats(&self, tenant_id: &str) -> Result<(i64, i64, i64, i64)> {
+        // Tenant-scoped stats snapshot. If the tenant row does not exist yet,
+        // callers should treat this as an empty snapshot and seed it later.
         let row = query(
-            "SELECT total_logs, total_alerts, active_alerts, critical_alerts FROM system_stats WHERE id = 1",
+            "SELECT total_logs, total_alerts, active_alerts, critical_alerts FROM system_stats WHERE tenant_id = $1",
         )
-        .fetch_one(&self.pool)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
         .await?;
+
+        let Some(row) = row else {
+            return Ok((0, 0, 0, 0));
+        };
 
         let total_logs: i64 = row.try_get("total_logs")?;
         let total_alerts: i64 = row.try_get("total_alerts")?;
@@ -378,16 +375,12 @@ impl PostgresDb {
     }
 
     /// Persist aggregated counters into a singleton `system_stats` row.
-    pub async fn save_stats(&self, _tenant_id: &str, total_logs: i64, total_alerts: i64, active_alerts: i64, critical_alerts: i64) -> Result<()> {
-        if !_tenant_id.is_empty() {
-            return Ok(());
-        }
-
+    pub async fn save_stats(&self, tenant_id: &str, total_logs: i64, total_alerts: i64, active_alerts: i64, critical_alerts: i64) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO system_stats (id, total_logs, total_alerts, active_alerts, critical_alerts, updated_at)
-            VALUES (1, $1, $2, $3, $4, NOW())
-            ON CONFLICT (id) DO UPDATE
+            INSERT INTO system_stats (tenant_id, total_logs, total_alerts, active_alerts, critical_alerts, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (tenant_id) DO UPDATE
             SET total_logs = EXCLUDED.total_logs,
                 total_alerts = EXCLUDED.total_alerts,
                 active_alerts = EXCLUDED.active_alerts,
@@ -395,6 +388,7 @@ impl PostgresDb {
                 updated_at = NOW();
             "#,
         )
+        .bind(tenant_id)
         .bind(total_logs)
         .bind(total_alerts)
         .bind(active_alerts)

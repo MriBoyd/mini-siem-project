@@ -89,6 +89,7 @@ pub async fn ingest_log(
                 critical_alerts: ca as i64,
             };
             let _ = state.stats_tx.send(stats);
+            let _ = state.db.save_stats(&claims.tenant_id, tl as i64, ta as i64, aa as i64, ca as i64).await;
         } else {
             // Fallback: compute from DB and seed Redis
             if let Ok((tl, ta, aa, ca)) = state.db.get_stats(&claims.tenant_id).await {
@@ -99,6 +100,7 @@ pub async fn ingest_log(
                 let _ = state.redis.set_counter(&format!("{}:total_alerts", tenant_prefix), ta as u64, Some(86400)).await;
                 let _ = state.redis.set_counter(&format!("{}:active_alerts", tenant_prefix), aa as u64, Some(86400)).await;
                 let _ = state.redis.set_counter(&format!("{}:critical_alerts", tenant_prefix), ca as u64, Some(86400)).await;
+                let _ = state.db.save_stats(&claims.tenant_id, tl, ta, aa, ca).await;
             }
         }
     }
@@ -215,6 +217,7 @@ pub async fn ingest_batch(
             critical_alerts: ca as i64,
         };
         let _ = state.stats_tx.send(stats);
+        let _ = state.db.save_stats(&claims.tenant_id, tl as i64, ta as i64, aa as i64, ca as i64).await;
     } else if let Ok((tl, ta, aa, ca)) = state.db.get_stats(&claims.tenant_id).await {
         let stats = crate::types::DashboardStats::from((tl, ta, aa, ca));
         let _ = state.stats_tx.send(stats.clone());
@@ -223,6 +226,7 @@ pub async fn ingest_batch(
         let _ = state.redis.set_counter(&format!("{}:total_alerts", tenant_prefix), ta as u64, Some(86400)).await;
         let _ = state.redis.set_counter(&format!("{}:active_alerts", tenant_prefix), aa as u64, Some(86400)).await;
         let _ = state.redis.set_counter(&format!("{}:critical_alerts", tenant_prefix), ca as u64, Some(86400)).await;
+        let _ = state.db.save_stats(&claims.tenant_id, tl, ta, aa, ca).await;
     }
     HttpResponse::Accepted().json(responses)
 }

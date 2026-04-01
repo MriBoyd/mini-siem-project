@@ -107,6 +107,7 @@ pub async fn spawn_alert_worker(
                             critical_alerts: ca as i64,
                         };
                         let _ = stats_tx.send(stats);
+                        let _ = db.save_stats(&alert.tenant_id, tl as i64, ta as i64, aa as i64, ca as i64).await;
                     }
                     }
                 }
