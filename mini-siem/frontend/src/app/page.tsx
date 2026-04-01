@@ -11,7 +11,8 @@ export default function RootPage() {
   useEffect(() => {
     if (!isLoading) {
       if (user) {
-        router.push('/dashboard');
+        const onboardingComplete = typeof window !== 'undefined' && localStorage.getItem('siem_onboarding_complete') === 'true';
+        router.push(onboardingComplete ? '/dashboard' : '/onboarding');
       } else {
         router.push('/login');
       }

@@ -85,6 +85,9 @@ pub async fn ingest_log(
     }
 
     info!("📥 Received log {} from {}", log_id, req.source_ip);
+    let heartbeat = Utc::now().timestamp().to_string();
+    let _ = state.redis.set_string("siem:health:agent_last_seen", &heartbeat, Some(300)).await;
+    let _ = state.redis.set_string("siem:health:ingest_last_seen", &heartbeat, Some(300)).await;
     metrics::counter!("siem_tenant_ingest_logs_total", 1, "tenant" => tenant_label.clone(), "kind" => "single");
     metrics::counter!("siem_http_ingest_requests_total", 1, "kind" => "single", "status_class" => "2xx");
     
@@ -208,6 +211,9 @@ pub async fn ingest_batch(
     }
     
     info!("📦 Accepted batch of {} logs", responses.len());
+    let heartbeat = Utc::now().timestamp().to_string();
+    let _ = state.redis.set_string("siem:health:agent_last_seen", &heartbeat, Some(300)).await;
+    let _ = state.redis.set_string("siem:health:ingest_last_seen", &heartbeat, Some(300)).await;
     metrics::counter!("siem_tenant_ingest_logs_total", responses.len() as u64, "tenant" => tenant_label.clone(), "kind" => "batch");
     metrics::counter!("siem_http_ingest_requests_total", 1, "kind" => "batch", "status_class" => "2xx");
     // Hot path stays write-only; background aggregation handles snapshots.

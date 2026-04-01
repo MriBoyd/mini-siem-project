@@ -147,6 +147,13 @@ impl PostgresDb {
         // surface the callsite during testing.
         Err(anyhow::anyhow!("create_log removed: logs are indexed in Elasticsearch"))
     }
+
+    pub async fn ping(&self) -> Result<()> {
+        let _: (i32,) = query_as("SELECT 1")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(())
+    }
     
     pub async fn update_alert(&self, alert: &Alert, redis: Option<RedisCache>) -> Result<()> {
         // Fetch previous status to determine if active_alerts counter should change

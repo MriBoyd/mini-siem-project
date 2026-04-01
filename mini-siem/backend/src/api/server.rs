@@ -56,6 +56,7 @@ pub async fn run_server(state: web::Data<AppState>, cors_allowed_origins: Vec<St
             .wrap(cors)
             .service(health::root)
             .service(health::health_check)
+            .service(health::detailed_health)
             // Public auth routes (logout requires JWT for revoking, but the handler will check it)
             // Actually, logout should be protected so we know WHICH user's token to revoke, 
             // OR we just revoke the refresh token provided. The current logout handler revokes 

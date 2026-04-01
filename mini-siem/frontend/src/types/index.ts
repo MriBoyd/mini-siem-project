@@ -13,6 +13,7 @@ export type AlertStatus = 'NEW' | 'INVESTIGATING' | 'RESOLVED' | 'FALSEPOSITIVE'
 
 export interface Alert {
   id: string;
+  tenant_id?: string;
   rule_id: string;
   rule_name: string;
   severity: AlertSeverity;
@@ -39,10 +40,26 @@ export interface DetectionRule {
 }
 
 export interface DashboardStats {
+  tenant_id?: string;
   total_logs: number;
   total_alerts: number;
   active_alerts: number;
   critical_alerts: number;
+}
+
+export type ServiceHealthStatus = 'healthy' | 'degraded' | 'down';
+
+export interface ServiceHealth {
+  status: ServiceHealthStatus;
+  last_seen_at?: string | null;
+  last_seen_seconds_ago?: number | null;
+  details?: string | null;
+}
+
+export interface SystemHealth {
+  status: ServiceHealthStatus;
+  version: string;
+  services: Record<string, ServiceHealth>;
 }
 
 export interface AuthResponse {

@@ -317,6 +317,12 @@ impl KafkaQueue {
         })
     }
 
+    pub async fn health(&self) -> Result<()> {
+        let _ = self.consumer.fetch_metadata(None, Timeout::After(Duration::from_secs(2)))?;
+        let _ = self.alert_consumer.fetch_metadata(None, Timeout::After(Duration::from_secs(2)))?;
+        Ok(())
+    }
+
     /// Consume from Kafka and forward logs into the provided `tx`.
     /// `full_counter` is incremented when the channel is full (monitoring aid).
     pub async fn consume_logs(&self, tx: mpsc::Sender<std::sync::Arc<Log>>, index_tx: Option<mpsc::Sender<std::sync::Arc<Log>>>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, rate_limit_per_ip: usize, rate_limit_window_ms: u64, rate_limit_sample_rate: u32, redis: RedisCache) -> Result<()> {
@@ -373,6 +379,8 @@ impl KafkaQueue {
                             if !allowed {
                                 continue;
                             }
+
+                            let _ = redis.set_string("siem:health:kafka_last_seen", &chrono::Utc::now().timestamp().to_string(), Some(300)).await;
 
                             let arc_log = std::sync::Arc::new(log);
 
@@ -447,7 +455,7 @@ impl KafkaQueue {
     }
 
     /// Consume alerts from Kafka and forward into the provided `tx` for processing.
-    pub async fn consume_alerts(&self, tx: mpsc::Sender<crate::types::Alert>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64) -> Result<()> {
+    pub async fn consume_alerts(&self, tx: mpsc::Sender<crate::types::Alert>, full_counter: Option<Arc<AtomicUsize>>, pause_on_full: bool, pause_timeout_ms: u64, redis: RedisCache) -> Result<()> {
         let mut stream = self.alert_consumer.stream();
 
         while let Some(message) = stream.next().await {
@@ -455,6 +463,7 @@ impl KafkaQueue {
                 Ok(msg) => {
                     if let Some(Ok(payload)) = msg.payload_view::<str>() {
                         if let Ok(alert) = serde_json::from_str::<crate::types::Alert>(payload) {
+                            let _ = redis.set_string("siem:health:kafka_last_seen", &chrono::Utc::now().timestamp().to_string(), Some(300)).await;
                             match tx.try_send(alert) {
                                 Ok(_) => {
                                     if let Some(cnt) = full_counter.as_ref() {

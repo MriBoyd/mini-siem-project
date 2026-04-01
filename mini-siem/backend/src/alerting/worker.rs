@@ -28,10 +28,12 @@ pub async fn spawn_alert_worker(
     let (tx, mut rx) = mpsc::channel::<Alert>(1000);
     let full_counter = Arc::new(AtomicUsize::new(0));
     let kafka_consumer = kafka.clone();
+    let redis_for_consumer = redis.clone();
+    let redis_for_worker = redis.clone();
 
     // Spawn the Kafka consumer task
     let consumer_handle = tokio::spawn(async move {
-        let res = kafka_consumer.consume_alerts(tx, Some(full_counter.clone()), pause_on_full, pause_timeout_ms).await;
+        let res = kafka_consumer.consume_alerts(tx, Some(full_counter.clone()), pause_on_full, pause_timeout_ms, redis_for_consumer).await;
         if let Err(e) = res {
             error!("Kafka alert consumer error: {}", e);
         }
@@ -45,6 +47,7 @@ pub async fn spawn_alert_worker(
             tokio::select! {
                 Some(alert) = rx.recv() => {
                     info!("⬇️  Processing alert {} from Kafka", alert.id);
+                    let _ = redis_for_worker.set_string("siem:health:alert_pipeline_last_seen", &chrono::Utc::now().timestamp().to_string(), Some(300)).await;
                     // Enqueue to DB batcher via the internal channel. If the channel is full,
                     // fallback to immediate DB write to avoid data loss.
                     if let Err(e) = db_tx.try_send(alert.clone()) {

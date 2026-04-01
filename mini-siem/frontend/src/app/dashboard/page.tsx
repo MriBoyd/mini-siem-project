@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { LogOut, ShieldAlert, Activity, FileText, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import Link from 'next/link';
 
 export default function DashboardPage() {
   const { user, logout } = useAuth();
@@ -45,9 +46,14 @@ export default function DashboardPage() {
           <h1 className="text-3xl font-bold">Mini SIEM Dashboard</h1>
           <p className="text-muted-foreground">Welcome back, {user?.email}</p>
         </div>
-        <Button variant="outline" onClick={() => logout()}>
-          <LogOut className="mr-2 h-4 w-4" /> Logout
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" asChild>
+            <Link href="/onboarding">Onboarding</Link>
+          </Button>
+          <Button variant="outline" onClick={() => logout()}>
+            <LogOut className="mr-2 h-4 w-4" /> Logout
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">

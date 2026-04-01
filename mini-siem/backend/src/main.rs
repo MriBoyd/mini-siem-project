@@ -311,6 +311,7 @@ async fn main() -> anyhow::Result<()> {
     
     // Start Kafka consumer (receives logs from Go agent)
     let kafka_consumer = kafka.clone();
+    let redis_for_indexer = redis.clone();
     let log_tx_clone = log_tx.clone();
     // Indexer channel and Elasticsearch client
     let (index_tx, mut index_rx) = mpsc::channel::<std::sync::Arc<types::Log>>(10000);
@@ -472,6 +473,7 @@ async fn main() -> anyhow::Result<()> {
                 match es.bulk_index(&idx, &refs).await {
                     Ok(_) => {
                         metrics::counter!("siem_logs_indexed_total", buffer.len() as u64);
+                        let _ = redis_for_indexer.set_string("siem:health:indexer_last_seen", &Utc::now().timestamp().to_string(), Some(300)).await;
                         success = true;
                         break;
                     }
@@ -512,7 +514,9 @@ async fn main() -> anyhow::Result<()> {
                     if buffer.len() >= batch_size {
                         let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
                         if let Ok(Some(es_client)) = timeout(Duration::from_secs(5), async { elastic_rx_for_indexer.borrow().clone() }).await {
-                            let _ = es_client.bulk_index(&idx, &refs).await;
+                            if es_client.bulk_index(&idx, &refs).await.is_ok() {
+                                let _ = redis_for_indexer.set_string("siem:health:indexer_last_seen", &Utc::now().timestamp().to_string(), Some(300)).await;
+                            }
                         }
                         buffer.clear();
                     }
@@ -520,7 +524,9 @@ async fn main() -> anyhow::Result<()> {
                 if !buffer.is_empty() {
                     let refs: Vec<&types::Log> = buffer.iter().map(|a| &**a).collect();
                     if let Ok(Some(es_client)) = timeout(Duration::from_secs(5), async { elastic_rx_for_indexer.borrow().clone() }).await {
-                        let _ = es_client.bulk_index(&idx, &refs).await;
+                        if es_client.bulk_index(&idx, &refs).await.is_ok() {
+                            let _ = redis_for_indexer.set_string("siem:health:indexer_last_seen", &Utc::now().timestamp().to_string(), Some(300)).await;
+                        }
                     }
                 }
                 break;

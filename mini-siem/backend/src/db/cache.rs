@@ -31,4 +31,5 @@ pub trait Cache: Send + Sync {
 
     async fn set_string(&self, key: &str, value: &str, expiry_seconds: Option<u64>) -> Result<()>;
     async fn get_string(&self, key: &str) -> Result<Option<String>>;
+    async fn ping(&self) -> Result<()>;
 }

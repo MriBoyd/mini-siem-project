@@ -305,6 +305,12 @@ impl Cache for RedisCache {
         let value: Option<String> = conn.get(key).await?;
         Ok(value)
     }
+
+    async fn ping(&self) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: String = redis::cmd("PING").query_async(&mut conn).await?;
+        Ok(())
+    }
 }
 
 impl RedisCache {

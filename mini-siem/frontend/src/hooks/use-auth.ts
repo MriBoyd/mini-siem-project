@@ -30,7 +30,8 @@ export function useAuth() {
       localStorage.setItem('access_token', data.access_token);
       localStorage.setItem('refresh_token', data.refresh_token);
       queryClient.invalidateQueries({ queryKey: ['me'] });
-      router.push('/dashboard');
+      const onboardingComplete = typeof window !== 'undefined' && localStorage.getItem('siem_onboarding_complete') === 'true';
+      router.push(onboardingComplete ? '/dashboard' : '/onboarding');
     },
   });
 
