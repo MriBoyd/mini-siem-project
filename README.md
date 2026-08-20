@@ -1,4 +1,3 @@
-```
 # Mini SIEM Platform
 
 A production-style, multi-tenant SIEM platform built with **Rust, Go, TypeScript, Next.js, PostgreSQL, Kafka, Redis, Elasticsearch, Docker, Kubernetes, OpenTelemetry, and Terraform**.
