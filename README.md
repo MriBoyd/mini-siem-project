@@ -416,9 +416,19 @@ Actual performance depends on infrastructure, tenant mix, rule complexity, and d
 
 ---
 
+## Contributing
+
+Contributions are welcome! Please refer to the [Contributing Guide](CONTRIBUTING.md) for details on setting up your local environment, coding standards, testing guidelines, and the pull request process.
+
+For release history and version details, see the [Changelog](CHANGELOG.md).
+
+---
+
 ## License
 
-No license has been specified yet.
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for complete details.
+
+Copyright (c) 2026 Dagim Woldemareyam (MriBoyd).
 
 ---
 
